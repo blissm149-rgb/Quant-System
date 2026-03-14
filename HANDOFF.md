@@ -128,27 +128,27 @@ quant_fund/
 │
 ├── portfolio/
 │   ├── portfolio_construction/
-│   │   ├── portfolio_optimizer.py      ⬜
-│   │   └── constraint_engine.py        ⬜
+│   │   ├── portfolio_optimizer.py      ✅
+│   │   └── constraint_engine.py        ✅
 │   ├── factor_risk_model/
-│   │   ├── factor_exposure_estimator.py ⬜
-│   │   ├── factor_covariance_estimator.py ⬜
-│   │   └── risk_decomposition.py       ⬜
+│   │   ├── factor_exposure_estimator.py ✅
+│   │   ├── factor_covariance_estimator.py ✅
+│   │   └── risk_decomposition.py       ✅
 │   ├── capital_allocation/
-│   │   ├── strategy_performance_tracker.py ⬜
-│   │   ├── strategy_correlation_matrix.py ⬜
-│   │   └── dynamic_strategy_allocator.py ⬜
+│   │   ├── strategy_performance_tracker.py ✅
+│   │   ├── strategy_correlation_matrix.py ✅
+│   │   └── dynamic_strategy_allocator.py ✅
 │   └── capacity_model/
-│       ├── liquidity_estimator.py      ⬜
-│       ├── market_impact_model.py      ⬜
-│       └── capacity_simulator.py       ⬜
+│       ├── liquidity_estimator.py      ✅
+│       ├── market_impact_model.py      ✅
+│       └── capacity_simulator.py       ✅
 │
 ├── risk_engine/
-│   ├── drawdown_monitor.py             ⬜
-│   ├── exposure_monitor.py             ⬜
-│   ├── leverage_controller.py          ⬜
-│   ├── portfolio_kill_switch.py        ⬜
-│   └── stress_test_engine.py           ⬜
+│   ├── drawdown_monitor.py             ✅
+│   ├── exposure_monitor.py             ✅
+│   ├── leverage_controller.py          ✅
+│   ├── portfolio_kill_switch.py        ✅
+│   └── stress_test_engine.py           ✅
 │
 ├── execution/
 │   ├── execution_algorithms/
@@ -239,13 +239,13 @@ Group E — Alpha discovery and monitoring (DONE ✅)
   alpha_monitoring/                           IC monitor, decay detector
   representation_learning/                    Autoencoder first; transformers last
 
-Group F — Portfolio construction (next)
+Group F — Portfolio construction (DONE ✅)
   portfolio/factor_risk_model/               Factor exposures and covariance first
   portfolio/portfolio_construction/          Optimizer and constraints
   portfolio/capital_allocation/              Strategy allocator
   portfolio/capacity_model/                  Market impact model
 
-Group G — Risk engine (implement alongside F)
+Group G — Risk engine (DONE ✅)
   risk_engine/                               Kill switch first, then monitors
 
 Group H — Execution
