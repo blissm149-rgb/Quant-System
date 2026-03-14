@@ -1,0 +1,7 @@
+system_name: QuantFund V8
+environment: local_research        # local_research | paper_trading | live_trading
+log_level: INFO
+base_currency: USD
+timezone: America/New_York
+data_root: ./data
+output_root: ./output

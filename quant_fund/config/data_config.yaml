@@ -1,0 +1,18 @@
+data_sources:
+  price_data: polygon_io             # or alpaca, yfinance, proprietary
+  fundamentals: compustat
+  analyst_estimates: ibes
+  options: cboe
+  etf_flows: factset
+  news: refinitiv
+  macro: fred
+
+schedules:
+  price_update: "09:30-16:00/5min"
+  daily_close: "16:30"
+  alternative_data_refresh: "06:00"
+
+storage:
+  format: parquet
+  partitioning: by_date
+  lookback_years: 10

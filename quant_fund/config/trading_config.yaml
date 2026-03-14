@@ -1,0 +1,19 @@
+universe:
+  min_tickers: 200
+  max_tickers: 400
+  liquidity_filter:
+    min_adv_usd: 5_000_000         # minimum average daily volume in USD
+    min_price: 5.0                  # exclude penny stocks
+  rebalance_frequency: daily        # daily | hourly
+  execution_window: market_hours
+
+position_limits:
+  max_position_size: 0.02           # 2% of portfolio per stock
+  max_sector_exposure: 0.20         # 20% per GICS sector
+  max_leverage: 2.0
+  dollar_neutral: true              # gross long ~ gross short
+
+performance_targets:
+  target_sharpe: 1.5
+  max_drawdown: 0.20
+  turnover_profile: moderate

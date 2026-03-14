@@ -1,0 +1,17 @@
+drawdown_limit: 0.20
+daily_var_limit: 0.02               # 2% daily VaR at 95%
+max_single_name_exposure: 0.02
+max_sector_exposure: 0.20
+max_factor_exposure:
+  market_beta: 0.20
+  momentum: 1.5
+  value: 1.5
+kill_switch:
+  enabled: true
+  halt_on_drawdown: true
+  halt_on_var_breach: true
+  auto_resume: false                 # manual resume only
+stress_tests:
+  - 2008_financial_crisis
+  - 2020_covid_crash
+  - 2022_rate_shock

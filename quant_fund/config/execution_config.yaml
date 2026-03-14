@@ -1,0 +1,7 @@
+default_algorithm: vwap
+vwap_participation_rate: 0.05       # 5% of volume
+twap_interval_minutes: 30
+large_order_threshold_adv: 0.005    # >0.5% ADV -> liquidity seeking
+max_order_size_usd: 500_000
+slippage_model: bid_ask_half_spread
+market_impact_model: almgren_chriss
