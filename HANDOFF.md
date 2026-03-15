@@ -54,7 +54,11 @@ quant_fund/
 │   ├── live_data_stream_adapter.py     ✅
 │   ├── corporate_action_adjuster.py    ✅
 │   ├── data_validator.py               ✅
-│   └── data_storage_manager.py         ✅
+│   ├── data_storage_manager.py         ✅ (+ purge_old_partitions, get_storage_stats)
+│   └── connectors/
+│       ├── base_connector.py           ✅ abstract data connector interface
+│       ├── csv_connector.py            ✅ local CSV data connector
+│       └── yfinance_connector.py       ✅ Yahoo Finance connector (optional dep)
 │
 ├── alternative_data/
 │   ├── news_sentiment/
@@ -193,6 +197,8 @@ quant_fund/
 │   ├── ci_cd_pipeline_manager.py       ✅
 │   ├── dataset_version_control.py      ✅
 │   ├── disaster_recovery_manager.py    ✅
+│   ├── model_store.py                  ✅ model persistence + champion/challenger
+│   ├── ingestion_scheduler.py          ✅ cooperative data ingestion scheduler
 │   ├── state_store.py                  ✅
 │   └── trade_recorder.py              ✅
 │

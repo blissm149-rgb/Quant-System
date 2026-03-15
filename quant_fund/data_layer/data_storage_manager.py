@@ -7,8 +7,10 @@ are stored separately.
 
 import logging
 import os
+import shutil
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import pandas as pd
 import yaml
@@ -233,8 +235,102 @@ class DataStorageManager:
 
     def delete_dataset(self, dataset: str, category: str = RAW_SUBDIR) -> None:
         """Delete a dataset and all its partitions."""
-        import shutil
         path = self._dataset_path(dataset, category)
         if path.exists():
             shutil.rmtree(path)
             logger.info("Deleted dataset: %s/%s", category, dataset)
+
+    def purge_old_partitions(
+        self,
+        dataset: str,
+        category: str = RAW_SUBDIR,
+        cutoff_date: Optional[pd.Timestamp] = None,
+    ) -> Tuple[int, int]:
+        """Remove date-partitioned directories older than *cutoff_date*.
+
+        If *cutoff_date* is not provided, uses ``lookback_years`` from
+        the configuration to compute a cutoff relative to today.
+
+        Args:
+            dataset: Logical dataset name.
+            category: Storage category.
+            cutoff_date: Remove partitions strictly before this date.
+                Defaults to ``today - lookback_years``.
+
+        Returns:
+            Tuple of ``(partitions_removed, partitions_kept)``.
+        """
+        if cutoff_date is None:
+            years = self._lookback_years
+            cutoff_date = pd.Timestamp(
+                datetime.now() - timedelta(days=years * 365)
+            )
+
+        base_path = self._dataset_path(dataset, category)
+        if not base_path.exists():
+            return 0, 0
+
+        removed = 0
+        kept = 0
+
+        for child in sorted(base_path.iterdir()):
+            if not child.is_dir():
+                continue
+            if not child.name.startswith("date="):
+                kept += 1
+                continue
+
+            date_str = child.name.replace("date=", "")
+            try:
+                partition_date = pd.Timestamp(date_str)
+            except (ValueError, TypeError):
+                kept += 1
+                continue
+
+            if partition_date < cutoff_date:
+                shutil.rmtree(child)
+                removed += 1
+                logger.debug("Purged partition %s from %s/%s", child.name, category, dataset)
+            else:
+                kept += 1
+
+        if removed > 0:
+            logger.info(
+                "Purged %d partition(s) older than %s from %s/%s (%d kept)",
+                removed, cutoff_date.date(), category, dataset, kept,
+            )
+        return removed, kept
+
+    def get_storage_stats(
+        self, dataset: str, category: str = RAW_SUBDIR
+    ) -> dict:
+        """Return storage statistics for a dataset.
+
+        Returns:
+            Dict with ``total_files``, ``total_bytes``,
+            ``oldest_partition``, ``newest_partition``.
+        """
+        base_path = self._dataset_path(dataset, category)
+        if not base_path.exists():
+            return {"total_files": 0, "total_bytes": 0}
+
+        total_files = 0
+        total_bytes = 0
+        partitions: List[str] = []
+
+        for pf in base_path.rglob("*.parquet"):
+            total_files += 1
+            total_bytes += pf.stat().st_size
+
+        for child in base_path.iterdir():
+            if child.is_dir() and child.name.startswith("date="):
+                partitions.append(child.name.replace("date=", ""))
+
+        partitions.sort()
+        return {
+            "total_files": total_files,
+            "total_bytes": total_bytes,
+            "oldest_partition": partitions[0] if partitions else None,
+            "newest_partition": partitions[-1] if partitions else None,
+            "partition_count": len(partitions),
+        }

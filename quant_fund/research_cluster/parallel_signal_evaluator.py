@@ -127,7 +127,9 @@ class ParallelSignalEvaluator:
 
     def __init__(self, config: Optional[dict] = None):
         cfg = config or {}
-        self._max_workers = cfg.get("max_workers", 4)
+        import os as _os
+        _default_workers = max(1, (_os.cpu_count() or 2) - 1)
+        self._max_workers = cfg.get("max_workers", _default_workers)
         self._min_ic_tstat = cfg.get("min_ic_tstat", 1.5)
 
     def evaluate_signals(

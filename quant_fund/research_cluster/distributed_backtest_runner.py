@@ -111,7 +111,9 @@ class DistributedBacktestRunner:
 
     def __init__(self, config: Optional[dict] = None):
         cfg = config or {}
-        self._max_workers = cfg.get("max_workers", 4)
+        import os as _os
+        _default_workers = max(1, (_os.cpu_count() or 2) - 1)
+        self._max_workers = cfg.get("max_workers", _default_workers)
         self._results: List[BacktestResult] = []
 
     def run_batch(
