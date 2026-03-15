@@ -162,6 +162,7 @@ quant_fund/
 │   ├── order_management/
 │   │   ├── order_generator.py          ✅
 │   │   └── order_router.py             ✅
+│   ├── reconciliation_engine.py        ✅ continuous position/NAV/order reconciliation
 │   └── microstructure_models/
 │       ├── bid_ask_spread_model.py     ✅
 │       ├── order_book_liquidity_model.py ✅
@@ -173,7 +174,8 @@ quant_fund/
 │   ├── broker_abstraction_layer.py     ✅
 │   ├── interactive_brokers_adapter.py  ✅
 │   ├── alpaca_adapter.py              ✅
-│   └── simulation_broker.py           ✅
+│   ├── simulation_broker.py           ✅
+│   └── broker_reconnection_manager.py ✅ auto-reconnect with backoff + failover
 │
 ├── research_cluster/
 │   ├── distributed_backtest_runner.py  ✅
@@ -200,12 +202,16 @@ quant_fund/
 │   ├── model_store.py                  ✅ model persistence + champion/challenger
 │   ├── ingestion_scheduler.py          ✅ cooperative data ingestion scheduler
 │   ├── state_store.py                  ✅
-│   └── trade_recorder.py              ✅
+│   ├── trade_recorder.py              ✅
+│   ├── event_bus.py                    ✅ in-process pub/sub with idempotency + replay
+│   ├── system_state_machine.py         ✅ lifecycle states + readiness checks
+│   └── state_persistence_manager.py    ✅ wires all components to StateStore
 │
 └── main/
     ├── research_runner.py              ✅
     ├── paper_trading_runner.py         ✅
-    └── live_trading_runner.py          ✅
+    ├── live_trading_runner.py          ✅
+    └── trading_engine.py              ✅ always-on event-driven main loop
 ```
 
 -----
@@ -273,10 +279,18 @@ Group J — Monitoring and governance
   monitoring/                                PnL dashboard first
   governance/                                Review pipeline then approval workflow
 
-Group K — Entry points
+Group K — Entry points (DONE ✅)
   main/research_runner.py                    First
   main/paper_trading_runner.py               Second
   main/live_trading_runner.py                Last — only after paper validation
+
+Group L — Always-on architecture (DONE ✅)
+  infrastructure/event_bus.py                In-process pub/sub message bus
+  infrastructure/system_state_machine.py     Lifecycle state control (INIT→DATA_READY→TRADING→HALT→SHUTDOWN)
+  infrastructure/state_persistence_manager.py Wires all components to StateStore for snapshots
+  execution/reconciliation_engine.py         Continuous position/NAV/order reconciliation vs broker
+  broker_interface/broker_reconnection_manager.py Auto-reconnect with exponential backoff + failover
+  main/trading_engine.py                     Always-on event loop: convergence, snapshots, recovery
 ```
 
 -----
@@ -371,6 +385,10 @@ Group K — Entry points
 |Kill switch           |Hard stop on 20% drawdown. Simple, no dependencies, always checked first.      |
 |Deployment gate       |paper trading ≥ 6 months + approval_workflow sign-off required                 |
 |Market impact         |Almgren-Chriss model or calibrated empirical model in market_impact_model.py   |
+|Always-on architecture|Event-driven main loop via TradingEngine + EventBus. State machine lifecycle.  |
+|State persistence     |All runtime state (kill switch, positions, signals) persisted via StateStore   |
+|Reconciliation        |Broker is source of truth. Positions reconciled every 5min, auto-corrected     |
+|Broker resilience     |BrokerReconnectionManager with exponential backoff + failover to secondary     |
 
 -----
 
@@ -510,6 +528,7 @@ class KillSwitch:
 |F (portfolio)      |Optimizer produces weights that satisfy all constraints. Assert max single position ≤ 0.02. Assert sector exposures ≤ 0.20. Assert leverage ≤ 2.0.                            |
 |G (risk)           |Kill switch triggers at exactly 20% drawdown. Exposure monitor catches a simulated breach.                                                                                    |
 |H (execution)      |Simulation broker fills orders with realistic slippage model. VWAP algo spreads a large order correctly across the day.                                                       |
+|L (always-on arch) |EventBus pub/sub + idempotency. State machine transitions + readiness checks. State persistence save/restore. Reconciliation detects discrepancies. TradingEngine lifecycle + convergence. Broker reconnection + failover. 30-day stability simulation. |
 |Full pipeline      |Run `paper_trading_runner.py` for 30 simulated trading days. Assert PnL attribution sums to total return. Assert no look-ahead flags raised.                                  |
 
 -----
