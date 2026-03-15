@@ -40,10 +40,12 @@ class SimulationBroker(BrokerInterface):
         self._cash = self._initial_cash
         self._half_spread_bps = cfg.get("half_spread_bps", 5.0)
         self._market_impact_bps = cfg.get("market_impact_bps", 2.0)
+        self._impact_exponent = cfg.get("impact_exponent", 0.6)
         self._latency_ms = cfg.get("latency_ms", 10)
         self._partial_fill_threshold = cfg.get("partial_fill_threshold_adv", 0.01)
         self._commission_per_share = cfg.get("commission_per_share", 0.005)
         self._max_fill_pct = cfg.get("max_fill_pct", 0.95)
+        self._enforce_cash_floor = cfg.get("enforce_cash_floor", True)
 
         self._positions: Dict[str, int] = {}
         self._orders: Dict[str, Order] = {}
@@ -74,6 +76,17 @@ class SimulationBroker(BrokerInterface):
                 message="No market data for ticker",
                 timestamp=order.timestamp,
             )
+
+        # Cash floor: reject BUY if insufficient funds
+        if self._enforce_cash_floor and fill.side == OrderSide.BUY:
+            cost = fill.quantity * fill.fill_price + fill.commission
+            if cost > self._cash:
+                return OrderAcknowledgement(
+                    order_id=order_id,
+                    status=OrderStatus.REJECTED,
+                    message=f"Insufficient cash: need ${cost:,.0f}, have ${self._cash:,.0f}",
+                    timestamp=order.timestamp,
+                )
 
         self._fills.append(fill)
         self._update_position(fill)
@@ -145,7 +158,16 @@ class SimulationBroker(BrokerInterface):
 
         mid = md.get("mid", md.get("last", 100.0))
         spread_bps = self._half_spread_bps
-        impact_bps = self._market_impact_bps
+        adv = md.get("adv", md.get("volume", 1e6))
+
+        # ADV-scaled market impact (Almgren-Chriss style)
+        if adv > 0 and order.quantity > 0:
+            participation = order.quantity / adv
+            impact_bps = self._market_impact_bps * (participation ** self._impact_exponent) * 10000
+            # Cap impact at reasonable level
+            impact_bps = min(impact_bps, 500.0)
+        else:
+            impact_bps = self._market_impact_bps
 
         # Compute fill price with slippage
         if order.side == OrderSide.BUY:

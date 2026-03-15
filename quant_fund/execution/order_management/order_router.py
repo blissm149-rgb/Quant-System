@@ -2,7 +2,8 @@
 
 Selects the appropriate execution algorithm (VWAP/TWAP/liquidity-seeking)
 based on order characteristics, then submits child orders through the
-broker abstraction layer.
+broker abstraction layer. All orders pass through OrderSafetyValidator
+before reaching the broker.
 """
 
 import logging
@@ -27,6 +28,9 @@ from quant_fund.execution.execution_algorithms.vwap_execution import (
 from quant_fund.execution.execution_algorithms.twap_execution import (
     TWAPExecution,
     TWAPPlan,
+)
+from quant_fund.execution.order_management.order_safety_validator import (
+    OrderSafetyValidator,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,17 +67,28 @@ class OrderRouter:
         cfg = config or {}
         self._large_order_threshold_adv = cfg.get("large_order_threshold_adv", 0.01)
         self._default_algo = cfg.get("default_algo", "vwap")
+        self._safety_enabled = cfg.get("safety_checks_enabled", True)
 
         self._vwap = VWAPExecution(cfg.get("vwap", {}))
         self._twap = TWAPExecution(cfg.get("twap", {}))
+        self._safety = OrderSafetyValidator(cfg.get("safety", {}))
 
         self._active_orders: Dict[str, RoutedOrder] = {}
         self._completed_orders: List[RoutedOrder] = []
+        self._nav: float = cfg.get("nav", 0.0)
+        self._cash: float = cfg.get("cash", float("inf"))
+
+    def update_context(self, nav: float = 0.0, cash: float = float("inf")) -> None:
+        """Update NAV and cash for safety checks."""
+        self._nav = nav
+        self._cash = cash
 
     def route_orders(
         self,
         orders: List[Order],
         adv: Optional[Dict[str, float]] = None,
+        positions: Optional[Dict[str, float]] = None,
+        prices: Optional[Dict[str, float]] = None,
     ) -> List[OrderAcknowledgement]:
         """Route a list of orders for execution.
 
@@ -83,15 +98,42 @@ class OrderRouter:
             Orders to execute.
         adv : dict, optional
             Mapping ticker → average daily volume for algo selection.
+        positions : dict, optional
+            Mapping ticker → current position in shares.
+        prices : dict, optional
+            Mapping ticker → current mid price.
 
         Returns
         -------
         list of OrderAcknowledgement
         """
         adv = adv or {}
+        positions = positions or {}
+        prices = prices or {}
         acks = []
 
         for order in orders:
+            # Safety check before routing
+            if self._safety_enabled:
+                result = self._safety.validate(
+                    order,
+                    nav=self._nav,
+                    adv=adv.get(order.ticker, 0.0),
+                    current_position=positions.get(order.ticker, 0.0),
+                    mid_price=prices.get(order.ticker, 0.0),
+                    cash=self._cash,
+                )
+                if not result.passed:
+                    reasons = "; ".join(r.message for r in result.rejections)
+                    ack = OrderAcknowledgement(
+                        order_id="",
+                        status=OrderStatus.REJECTED,
+                        message=f"Safety rejected: {reasons}",
+                        timestamp=order.timestamp,
+                    )
+                    acks.append(ack)
+                    continue
+
             algo = self._select_algo(order, adv.get(order.ticker, 0.0))
             ack = self._execute_order(order, algo, adv.get(order.ticker, 1e6))
             acks.append(ack)
@@ -102,8 +144,28 @@ class OrderRouter:
         self,
         order: Order,
         adv: float = 0.0,
+        current_position: float = 0.0,
+        mid_price: float = 0.0,
     ) -> OrderAcknowledgement:
         """Route a single order."""
+        if self._safety_enabled:
+            result = self._safety.validate(
+                order,
+                nav=self._nav,
+                adv=adv,
+                current_position=current_position,
+                mid_price=mid_price,
+                cash=self._cash,
+            )
+            if not result.passed:
+                reasons = "; ".join(r.message for r in result.rejections)
+                return OrderAcknowledgement(
+                    order_id="",
+                    status=OrderStatus.REJECTED,
+                    message=f"Safety rejected: {reasons}",
+                    timestamp=order.timestamp,
+                )
+
         algo = self._select_algo(order, adv)
         return self._execute_order(order, algo, adv)
 

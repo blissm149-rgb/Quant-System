@@ -487,7 +487,7 @@ class TestOrderRouter:
         assert ack.order_id != ""
 
     def test_large_order_auto_routes_to_algo(self):
-        broker = make_sim_broker()
+        broker = make_sim_broker(initial_cash=100_000_000.0)
         router = OrderRouter(broker, {"large_order_threshold_adv": 0.01})
         # Order > 1% of ADV (500_000 > 1% of 50M)
         order = Order(ticker="AAPL", side=OrderSide.BUY, quantity=600_000,

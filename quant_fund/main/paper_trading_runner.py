@@ -222,15 +222,22 @@ class PaperTradingRunner:
 
             # 5. Risk checks on target weights
             if target_weights is not None:
-                if self._exposure_monitor is not None:
-                    breaches = self._exposure_monitor.check(target_weights)
-                    if breaches:
-                        day.exposure_breaches = [str(b) for b in breaches]
-
                 if self._leverage_controller is not None:
                     target_weights = self._leverage_controller.enforce(
                         target_weights
                     )
+
+                if self._exposure_monitor is not None:
+                    breaches = self._exposure_monitor.check(target_weights)
+                    if breaches:
+                        day.exposure_breaches = [str(b) for b in breaches]
+                        day.status = "exposure_breach"
+                        day.nav = nav
+                        logger.warning(
+                            "Exposure breach on %s — orders blocked: %s",
+                            date, day.exposure_breaches,
+                        )
+                        target_weights = None  # block order generation
 
             # 6. Generate and execute orders
             if target_weights is not None and self._order_generator is not None:
