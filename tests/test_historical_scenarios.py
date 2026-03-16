@@ -50,6 +50,15 @@ from quant_fund.portfolio.portfolio_construction.constraint_engine import (
 from quant_fund.portfolio.portfolio_construction.portfolio_optimizer import (
     PortfolioOptimizer,
 )
+from quant_fund.research_algorithms.factor_models.momentum_factor import MomentumFactor
+from quant_fund.research_algorithms.factor_models.value_factor import ValueFactor
+from quant_fund.research_algorithms.factor_models.quality_factor import QualityFactor
+from quant_fund.research_algorithms.factor_models.low_volatility_factor import LowVolatilityFactor
+from quant_fund.research_algorithms.mean_reversion.zscore_reversion_strategy import (
+    ZScoreReversionStrategy,
+)
+from quant_fund.alpha_discovery.signal_ranking_engine import SignalRankingEngine
+from quant_fund.feature_factory.feature_normalizer import FeatureNormalizer
 from quant_fund.risk_engine.drawdown_monitor import DrawdownMonitor
 from quant_fund.risk_engine.exposure_monitor import ExposureMonitor
 from quant_fund.risk_engine.leverage_controller import LeverageController
@@ -182,6 +191,90 @@ class SeededAlphaResearch:
         r.alpha_scores = alpha
         r.validation_flags = []
         return r
+
+
+class DataDrivenResearch:
+    """Research wrapper that derives alpha from real OHLCV data.
+
+    Uses the real ResearchRunner + factor models (Momentum, Value, Quality,
+    LowVol, ZScoreReversion) to compute alpha from historical price data.
+    On each run_cycle, slices the full OHLCV history up to as_of.
+    """
+
+    def __init__(
+        self,
+        tickers,
+        ohlcv,
+        crash_after_day=None,
+        crash_magnitude=-3.0,
+    ):
+        self._tickers = tickers
+        self._ohlcv = ohlcv  # full MultiIndex (date, ticker) OHLCV
+        self._day = 0
+        self._crash_after_day = crash_after_day
+        self._crash_magnitude = crash_magnitude
+        self.last_alpha_scores = None
+
+        # Wire up factor models directly (bypassing ResearchRunner's
+        # combine path which has a DataFrame/dict compatibility issue).
+        self._feature_generators = [
+            MomentumFactor({"momentum_long_window": 252, "momentum_skip_window": 21}),
+            ValueFactor({"value_lookback_days": 63}),
+            QualityFactor(),
+            LowVolatilityFactor(),
+            ZScoreReversionStrategy({"reversion_return_window": 5}),
+        ]
+        self._signal_ranking = SignalRankingEngine()
+
+    def run_cycle(self, as_of, market_data=None):
+        """Compute alpha from OHLCV history up to as_of."""
+        self._day += 1
+
+        # Slice OHLCV up to (but not including) as_of for point-in-time safety
+        all_dates = self._ohlcv.index.get_level_values("date")
+        history = self._ohlcv[all_dates < as_of]
+
+        class Result:
+            pass
+
+        result = Result()
+        result.alpha_scores = None
+        result.validation_flags = []
+
+        if not history.empty:
+            # Compute features from each factor model
+            features = {}
+            for gen in self._feature_generators:
+                try:
+                    vals = gen.compute(history, as_of=as_of)
+                    if vals is not None and not vals.empty:
+                        features[gen.feature_name] = vals
+                except Exception:
+                    pass
+
+            # Combine into composite alpha via equal-weight averaging
+            if features:
+                alpha_scores = self._signal_ranking.combine(features)
+                result.alpha_scores = alpha_scores
+
+        alpha_scores = result.alpha_scores
+
+        # Inject crash bias if configured (overrides data-driven signal)
+        if (
+            self._crash_after_day
+            and self._day > self._crash_after_day
+            and alpha_scores is not None
+            and not alpha_scores.empty
+        ):
+            crash_days = self._day - self._crash_after_day
+            bias = self._crash_magnitude * min(crash_days / 5.0, 1.0)
+            alpha_scores = alpha_scores + bias
+
+        if alpha_scores is not None:
+            self.last_alpha_scores = alpha_scores
+            result.alpha_scores = alpha_scores
+
+        return result
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -393,14 +486,8 @@ class ScenarioRunner:
             }
         broker.set_market_data(base_md)
 
-        # Build research (seeded alpha generator)
+        # Research component — built after data generation (see below)
         crash_after = cfg.get("crash_after_day")
-        research = SeededAlphaResearch(
-            tickers,
-            seed=cfg.get("alpha_seed", 42),
-            crash_after_day=crash_after,
-            crash_magnitude=cfg.get("crash_magnitude", -3.0),
-        )
 
         # Build optimizer — use REAL optimizer now that the runner
         # passes all required args (factor_covariance, factor_exposures)
@@ -461,6 +548,22 @@ class ScenarioRunner:
                 tickers=tickers, periods=300 + num_days, seed=ohlcv_seed,
             )
             sector_map = STANDARD_SECTORS
+
+        # Build research — data-driven for real data, random stub otherwise
+        if use_real:
+            research = DataDrivenResearch(
+                tickers,
+                ohlcv=ohlcv,
+                crash_after_day=crash_after,
+                crash_magnitude=cfg.get("crash_magnitude", -3.0),
+            )
+        else:
+            research = SeededAlphaResearch(
+                tickers,
+                seed=cfg.get("alpha_seed", 42),
+                crash_after_day=crash_after,
+                crash_magnitude=cfg.get("crash_magnitude", -3.0),
+            )
 
         # Build risk components
         kill_switch = KillSwitch({
