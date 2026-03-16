@@ -20,6 +20,13 @@ from tests.conftest import (
     make_ohlcv,
     make_returns,
 )
+from tests.real_market_data import (
+    SECTORS as REAL_SECTORS,
+    make_real_factor_returns,
+    make_real_market_data,
+    make_real_ohlcv,
+    make_real_returns,
+)
 
 from quant_fund.broker_interface.simulation_broker import SimulationBroker
 from quant_fund.execution.order_management.order_generator import OrderGenerator
@@ -372,11 +379,18 @@ class ScenarioRunner:
             "initial_cash": initial_cash,
             "enforce_cash_floor": True,
         })
-        # Build market data from standard set, filtered to our tickers
-        base_md = {
-            t: dict(STANDARD_MARKET_DATA[t])
-            for t in tickers if t in STANDARD_MARKET_DATA
-        }
+        # Build market data: use real prices if real data mode, else standard
+        if cfg.get("use_real_data"):
+            base_md = make_real_market_data(
+                tickers=tickers,
+                as_of=cfg.get("data_start", "2022-01-31"),
+                seed=cfg.get("ohlcv_seed", 42),
+            )
+        else:
+            base_md = {
+                t: dict(STANDARD_MARKET_DATA[t])
+                for t in tickers if t in STANDARD_MARKET_DATA
+            }
         broker.set_market_data(base_md)
 
         # Build research (seeded alpha generator)
@@ -415,23 +429,38 @@ class ScenarioRunner:
             "cov_min_observations": 20,  # lower for test data
         })
 
-        # Generate time-varying data: stock returns and factor returns
-        # spanning well before the trading period for estimation windows
+        # Generate time-varying data: stock returns, factor returns, OHLCV.
+        # Use real historical data if use_real_data=True in config, else synthetic.
+        use_real = cfg.get("use_real_data", False)
         ohlcv_seed = cfg.get("ohlcv_seed", 42)
-        stock_returns = make_returns(
-            n_dates=300 + num_days,
-            tickers=tickers,
-            seed=ohlcv_seed,
-        )
-        factor_returns = make_factor_returns(
-            n_dates=300 + num_days,
-            seed=ohlcv_seed + 1,
-        )
+        data_start = cfg.get("data_start", "2020-01-02")
+        data_end = cfg.get("data_end", "2023-12-29")
 
-        # Generate daily OHLCV for price evolution
-        ohlcv = make_ohlcv(
-            tickers=tickers, periods=300 + num_days, seed=ohlcv_seed,
-        )
+        if use_real:
+            stock_returns = make_real_returns(
+                tickers=tickers, start=data_start, end=data_end, seed=ohlcv_seed,
+            )
+            factor_returns = make_real_factor_returns(
+                start=data_start, end=data_end, seed=ohlcv_seed,
+            )
+            ohlcv = make_real_ohlcv(
+                tickers=tickers, start=data_start, end=data_end, seed=ohlcv_seed,
+            )
+            sector_map = REAL_SECTORS
+        else:
+            stock_returns = make_returns(
+                n_dates=300 + num_days,
+                tickers=tickers,
+                seed=ohlcv_seed,
+            )
+            factor_returns = make_factor_returns(
+                n_dates=300 + num_days,
+                seed=ohlcv_seed + 1,
+            )
+            ohlcv = make_ohlcv(
+                tickers=tickers, periods=300 + num_days, seed=ohlcv_seed,
+            )
+            sector_map = STANDARD_SECTORS
 
         # Build risk components
         kill_switch = KillSwitch({
@@ -471,7 +500,7 @@ class ScenarioRunner:
             factor_covariance_estimator=factor_covariance_est,
             factor_returns=factor_returns,
             stock_returns=stock_returns,
-            sector_map=STANDARD_SECTORS,
+            sector_map=sector_map,
             kill_switch=kill_switch,
             exposure_monitor=exposure_monitor,
             leverage_controller=leverage_ctrl,
@@ -884,6 +913,87 @@ SCENARIO_STRESS = {
 }
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Real historical data scenarios (2022-2023: bear market + recovery)
+# ═══════════════════════════════════════════════════════════════════════
+
+REAL_TICKERS_5 = ["AAPL", "MSFT", "GOOG", "AMZN", "META"]
+REAL_TICKERS_10 = [
+    "AAPL", "MSFT", "GOOG", "AMZN", "META",
+    "TSLA", "NVDA", "JPM", "BAC", "WMT",
+]
+
+REAL_CONSERVATIVE = {
+    "name": "Real Conservative (2023 H1)",
+    "tickers": REAL_TICKERS_5,
+    "initial_cash": 1_000_000,
+    "max_leverage": 1.0,
+    "max_position_size": 0.01,
+    "max_sector_exposure": 0.15,
+    "drawdown_limit": 0.10,
+    "risk_aversion": 2.0,
+    "alpha_seed": 42,
+    "ohlcv_seed": 42,
+    "num_days": 60,
+    "use_real_data": True,
+    "data_start": "2022-01-03",
+    "data_end": "2023-06-30",
+}
+
+REAL_MODERATE = {
+    "name": "Real Moderate (2022 Bear Market)",
+    "tickers": REAL_TICKERS_10,
+    "initial_cash": 5_000_000,
+    "max_leverage": 2.0,
+    "max_position_size": 0.02,
+    "max_sector_exposure": 0.20,
+    "drawdown_limit": 0.20,
+    "risk_aversion": 1.0,
+    "alpha_seed": 123,
+    "ohlcv_seed": 42,
+    "num_days": 120,
+    "use_real_data": True,
+    "data_start": "2020-01-02",
+    "data_end": "2022-12-30",
+}
+
+REAL_AGGRESSIVE = {
+    "name": "Real Aggressive (2023 Recovery)",
+    "tickers": REAL_TICKERS_10,
+    "initial_cash": 10_000_000,
+    "max_leverage": 2.0,
+    "max_position_size": 0.05,
+    "max_sector_exposure": 0.30,
+    "drawdown_limit": 0.25,
+    "risk_aversion": 0.5,
+    "alpha_seed": 999,
+    "ohlcv_seed": 42,
+    "num_days": 120,
+    "use_real_data": True,
+    "data_start": "2020-01-02",
+    "data_end": "2023-12-29",
+}
+
+REAL_STRESS = {
+    "name": "Real Stress (COVID Crash Period)",
+    "tickers": REAL_TICKERS_10,
+    "initial_cash": 5_000_000,
+    "max_leverage": 2.0,
+    "max_position_size": 0.05,
+    "max_sector_exposure": 0.30,
+    "drawdown_limit": 0.15,
+    "risk_aversion": 0.5,
+    "alpha_seed": 77,
+    "ohlcv_seed": 42,
+    "num_days": 60,
+    "use_real_data": True,
+    "data_start": "2020-01-02",
+    "data_end": "2020-12-31",
+    "crash_after_day": 25,
+    "crash_magnitude": -4.0,
+}
+
+
 class TestHistoricalScenarios:
     """Run 4 historical configurations and produce detailed reports."""
 
@@ -933,6 +1043,53 @@ class TestHistoricalScenarios:
         # Stress test should show significant activity
         # Kill switch may or may not trigger depending on price impact
         # But the scenario should complete without errors
+        assert s["final_nav"] > 0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PART 2b: Real Historical Data Scenarios
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestRealHistoricalScenarios:
+    """Run scenarios using real historical price data (2020-2023)."""
+
+    def _run_and_report(self, config):
+        runner = ScenarioRunner(config)
+        result = runner.run()
+        report = format_report(result)
+        print("\n" + report)
+        return result
+
+    def test_real_conservative(self):
+        """Real data: Conservative, 5 tech tickers, 2023 H1."""
+        result = self._run_and_report(REAL_CONSERVATIVE)
+        s = result["summary"]
+        assert s["num_days_traded"] > 0
+        assert s["final_nav"] > 0
+        assert s["max_drawdown_pct"] < 15.0
+
+    def test_real_moderate(self):
+        """Real data: Moderate, 10 tickers, 2022 bear market."""
+        result = self._run_and_report(REAL_MODERATE)
+        s = result["summary"]
+        assert s["num_days_traded"] > 0
+        assert s["final_nav"] > 0
+        assert s["total_orders"] > 0
+
+    def test_real_aggressive(self):
+        """Real data: Aggressive, 10 tickers, 2023 recovery rally."""
+        result = self._run_and_report(REAL_AGGRESSIVE)
+        s = result["summary"]
+        assert s["num_days_traded"] > 0
+        assert s["final_nav"] > 0
+        assert s["total_orders"] > 0
+
+    def test_real_stress_covid(self):
+        """Real data: Stress test with COVID crash price drops."""
+        result = self._run_and_report(REAL_STRESS)
+        s = result["summary"]
+        assert s["num_days_traded"] > 0
         assert s["final_nav"] > 0
 
 
