@@ -81,6 +81,11 @@ class PaperTradingRunner:
         self._broker = None
         self._pnl_dashboard = None
         self._alerting = None
+        self._factor_exposure_estimator = None
+        self._factor_covariance_estimator = None
+        self._factor_returns = None  # pd.DataFrame (dates x factors)
+        self._stock_returns = None  # pd.DataFrame (dates x tickers)
+        self._sector_map = None  # Dict[str, str] ticker -> sector
 
     def inject_components(self, **components) -> None:
         """Inject pipeline components by name.
@@ -88,7 +93,9 @@ class PaperTradingRunner:
         Accepted keys: research_runner, portfolio_optimizer,
         constraint_engine, risk_model, kill_switch, exposure_monitor,
         leverage_controller, order_generator, order_router, broker,
-        pnl_dashboard, alerting.
+        pnl_dashboard, alerting, factor_exposure_estimator,
+        factor_covariance_estimator, factor_returns, stock_returns,
+        sector_map.
         """
         for name, component in components.items():
             attr = f"_{name}"
@@ -187,6 +194,26 @@ class PaperTradingRunner:
         )
 
         try:
+            # 0. Update broker with today's market data (price evolution)
+            if self._broker is not None and market_data is not None:
+                updated_md = {}
+                if hasattr(market_data, "iterrows"):
+                    for ticker, row in market_data.iterrows():
+                        mid = row.get("mid") if "mid" in row.index else row.get("close", 0)
+                        if mid is None or mid == 0:
+                            continue
+                        spread = mid * 0.001  # 10bps default spread
+                        updated_md[ticker] = {
+                            "bid": mid - spread / 2,
+                            "ask": mid + spread / 2,
+                            "mid": mid,
+                            "last": mid,
+                            "volume": row.get("volume", 1_000_000),
+                            "adv": row.get("adv", row.get("volume", 1_000_000)),
+                        }
+                    if updated_md:
+                        self._broker.set_market_data(updated_md)
+
             # 1. Get current NAV
             nav = prev_nav
             if self._broker is not None:
@@ -209,18 +236,48 @@ class PaperTradingRunner:
                 alpha_scores = research_result.alpha_scores
                 day.look_ahead_flags = research_result.validation_flags
 
-            # 4. Portfolio optimisation
+            # 4. Factor risk model estimation
+            factor_exposures = None
+            factor_covariance = None
+            if (
+                self._factor_exposure_estimator is not None
+                and self._factor_covariance_estimator is not None
+                and self._factor_returns is not None
+                and self._stock_returns is not None
+            ):
+                factor_exposures = self._factor_exposure_estimator.estimate(
+                    returns=self._stock_returns,
+                    factor_returns=self._factor_returns,
+                    as_of=date,
+                    sector_map=self._sector_map,
+                )
+                factor_covariance = self._factor_covariance_estimator.estimate(
+                    factor_returns=self._factor_returns,
+                    as_of=date,
+                )
+
+            # 5. Portfolio optimisation
             target_weights = None
             if self._portfolio_optimizer is not None and alpha_scores is not None:
                 constraints = None
                 if self._constraint_engine is not None:
-                    constraints = self._constraint_engine.get_constraints()
+                    constraints = self._constraint_engine.build_constraints(
+                        sector_map=self._sector_map,
+                    )
+
+                current_positions = pd.Series(dtype=float)
+                if self._broker is not None:
+                    current_positions = self._broker.get_positions()
+
                 target_weights = self._portfolio_optimizer.optimize(
                     alpha_scores=alpha_scores,
+                    factor_covariance=factor_covariance,
+                    factor_exposures=factor_exposures,
                     constraints=constraints,
+                    current_positions=current_positions,
                 )
 
-            # 5. Risk checks on target weights
+            # 6. Risk checks on target weights
             if target_weights is not None:
                 if self._leverage_controller is not None:
                     target_weights = self._leverage_controller.enforce(
@@ -228,7 +285,11 @@ class PaperTradingRunner:
                     )
 
                 if self._exposure_monitor is not None:
-                    breaches = self._exposure_monitor.check(target_weights)
+                    breaches = self._exposure_monitor.check(
+                        target_weights,
+                        sector_map=self._sector_map,
+                        factor_exposures=factor_exposures,
+                    )
                     if breaches:
                         day.exposure_breaches = [str(b) for b in breaches]
                         day.status = "exposure_breach"
@@ -239,7 +300,7 @@ class PaperTradingRunner:
                         )
                         target_weights = None  # block order generation
 
-            # 6. Generate and execute orders
+            # 7. Generate and execute orders
             if target_weights is not None and self._order_generator is not None:
                 current_positions = pd.Series(dtype=float)
                 prices = pd.Series(dtype=float)
@@ -266,14 +327,18 @@ class PaperTradingRunner:
                         1 for a in acks if a.status.value in ("filled", "partial_fill")
                     )
 
-            # 7. Update NAV
+            # 8. Update NAV
             if self._broker is not None:
                 nav = self._broker.get_account_value()
 
             day.nav = nav
             day.daily_return = (nav / prev_nav - 1.0) if prev_nav > 0 else 0.0
 
-            # 8. Update monitoring
+            # 9. Update kill switch peak NAV
+            if self._kill_switch is not None:
+                self._kill_switch.update_peak(nav)
+
+            # 10. Update monitoring
             if self._pnl_dashboard is not None:
                 self._pnl_dashboard.update(nav, timestamp=date)
 

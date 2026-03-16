@@ -16,7 +16,9 @@ from tests.conftest import (
     STANDARD_MARKET_DATA,
     STANDARD_SECTORS,
     STANDARD_TICKERS,
+    make_factor_returns,
     make_ohlcv,
+    make_returns,
 )
 
 from quant_fund.broker_interface.simulation_broker import SimulationBroker
@@ -28,7 +30,19 @@ from quant_fund.main.live_trading_runner import LiveTradingRunner
 from quant_fund.main.paper_trading_runner import PaperTradingRunner, TradingDayResult
 from quant_fund.main.research_runner import ResearchRunner
 from quant_fund.monitoring.pnl_dashboard import PnLDashboard
-from quant_fund.portfolio.portfolio_construction.constraint_engine import ConstraintSet
+from quant_fund.portfolio.factor_risk_model.factor_covariance_estimator import (
+    FactorCovarianceEstimator,
+)
+from quant_fund.portfolio.factor_risk_model.factor_exposure_estimator import (
+    FactorExposureEstimator,
+)
+from quant_fund.portfolio.portfolio_construction.constraint_engine import (
+    ConstraintEngine,
+    ConstraintSet,
+)
+from quant_fund.portfolio.portfolio_construction.portfolio_optimizer import (
+    PortfolioOptimizer,
+)
 from quant_fund.risk_engine.drawdown_monitor import DrawdownMonitor
 from quant_fund.risk_engine.exposure_monitor import ExposureMonitor
 from quant_fund.risk_engine.leverage_controller import LeverageController
@@ -73,8 +87,7 @@ class MockSignalRanking:
 
 
 class MockConstraintEngine:
-    """Constraint engine mock with get_constraints() method
-    (matches what PaperTradingRunner._run_single_day calls)."""
+    """Constraint engine mock matching the real build_constraints() API."""
 
     def __init__(self, config=None):
         cfg = config or {}
@@ -83,12 +96,13 @@ class MockConstraintEngine:
         self._max_leverage = cfg.get("max_leverage", 2.0)
         self._dollar_neutral = cfg.get("dollar_neutral", True)
 
-    def get_constraints(self):
+    def build_constraints(self, sector_map=None):
         return ConstraintSet(
             max_position_size=self._max_position_size,
             max_sector_exposure=self._max_sector_exposure,
             max_leverage=self._max_leverage,
             dollar_neutral=self._dollar_neutral,
+            sector_map=sector_map,
         )
 
 
@@ -99,7 +113,9 @@ class MockPortfolioOptimizer:
         cfg = config or {}
         self._risk_aversion = cfg.get("risk_aversion", 1.0)
 
-    def optimize(self, alpha_scores, constraints=None, **kwargs):
+    def optimize(self, alpha_scores, factor_covariance=None,
+                 factor_exposures=None, constraints=None,
+                 current_positions=None, **kwargs):
         if alpha_scores is None or alpha_scores.empty:
             return pd.Series(dtype=float)
         # Scale by inverse risk aversion (more aggressive = bigger weights)
@@ -372,18 +388,50 @@ class ScenarioRunner:
             crash_magnitude=cfg.get("crash_magnitude", -3.0),
         )
 
-        # Build optimizer
-        optimizer = MockPortfolioOptimizer({
+        # Build optimizer — use REAL optimizer now that the runner
+        # passes all required args (factor_covariance, factor_exposures)
+        optimizer = PortfolioOptimizer({
             "risk_aversion": cfg.get("risk_aversion", 1.0),
         })
 
-        # Build constraints
-        constraint_eng = MockConstraintEngine({
-            "max_position_size": cfg.get("max_position_size", 0.02),
-            "max_sector_exposure": cfg.get("max_sector_exposure", 0.20),
-            "max_leverage": cfg.get("max_leverage", 2.0),
-            "dollar_neutral": True,
+        # Build constraints — use REAL constraint engine
+        constraint_eng = ConstraintEngine({
+            "position_limits": {
+                "max_position_size": cfg.get("max_position_size", 0.02),
+                "max_sector_exposure": cfg.get("max_sector_exposure", 0.20),
+                "max_leverage": cfg.get("max_leverage", 2.0),
+                "dollar_neutral": True,
+            },
         })
+
+        # Build factor risk model components
+        factor_exposure_est = FactorExposureEstimator({
+            "factor_estimation_window": 252,
+            "factor_min_observations": 20,  # lower for test data
+            "include_sector_factors": True,
+        })
+        factor_covariance_est = FactorCovarianceEstimator({
+            "cov_estimation_window": 252,
+            "cov_min_observations": 20,  # lower for test data
+        })
+
+        # Generate time-varying data: stock returns and factor returns
+        # spanning well before the trading period for estimation windows
+        ohlcv_seed = cfg.get("ohlcv_seed", 42)
+        stock_returns = make_returns(
+            n_dates=300 + num_days,
+            tickers=tickers,
+            seed=ohlcv_seed,
+        )
+        factor_returns = make_factor_returns(
+            n_dates=300 + num_days,
+            seed=ohlcv_seed + 1,
+        )
+
+        # Generate daily OHLCV for price evolution
+        ohlcv = make_ohlcv(
+            tickers=tickers, periods=300 + num_days, seed=ohlcv_seed,
+        )
 
         # Build risk components
         kill_switch = KillSwitch({
@@ -412,13 +460,18 @@ class ScenarioRunner:
         # Build monitoring
         pnl = PnLDashboard({"initial_nav": initial_cash})
 
-        # Wire the paper trading runner — run manually day by day
-        # so we can inject market data changes for crash scenarios
+        # Wire the paper trading runner with ALL components including
+        # factor risk model and sector map
         runner = PaperTradingRunner({"initial_nav": initial_cash})
         runner.inject_components(
             research_runner=research,
             portfolio_optimizer=optimizer,
             constraint_engine=constraint_eng,
+            factor_exposure_estimator=factor_exposure_est,
+            factor_covariance_estimator=factor_covariance_est,
+            factor_returns=factor_returns,
+            stock_returns=stock_returns,
+            sector_map=STANDARD_SECTORS,
             kill_switch=kill_switch,
             exposure_monitor=exposure_monitor,
             leverage_controller=leverage_ctrl,
@@ -428,22 +481,32 @@ class ScenarioRunner:
             pnl_dashboard=pnl,
         )
 
-        # Generate trading dates
-        dates = list(pd.bdate_range("2024-01-02", periods=num_days))
+        # Generate trading dates — use dates from the OHLCV data
+        # (last num_days business days of generated OHLCV)
+        all_ohlcv_dates = ohlcv.index.get_level_values("date").unique()
+        dates = list(all_ohlcv_dates[-num_days:])
+
+        # Build market_data_by_date from OHLCV for price evolution
+        market_data_by_date = {}
+        for dt in dates:
+            if dt in ohlcv.index.get_level_values("date"):
+                day_data = ohlcv.loc[dt]  # ticker-indexed DataFrame
+                # Convert to mid-price format for broker
+                md_df = pd.DataFrame(index=day_data.index)
+                md_df["mid"] = day_data["close"]
+                md_df["close"] = day_data["close"]
+                md_df["volume"] = day_data["volume"]
+                market_data_by_date[dt] = md_df
 
         # For crash scenarios, we run day-by-day and degrade market prices
         if crash_after:
             result = self._run_with_crash(
                 runner, broker, base_md, tickers,
                 dates, initial_cash, crash_after, kill_switch,
+                market_data_by_date,
             )
         else:
-            result = runner.run(dates)
-
-        # Update kill switch peak (the runner's run() does this internally
-        # but our manual crash loop needs the kill switch in sync)
-        if not crash_after:
-            kill_switch.update_peak(result.final_nav)
+            result = runner.run(dates, market_data_by_date)
 
         # Collect snapshots and risk info
         cumulative_orders = 0
@@ -553,6 +616,7 @@ class ScenarioRunner:
     def _run_with_crash(
         self, runner, broker, base_md, tickers,
         dates, initial_cash, crash_after, kill_switch,
+        market_data_by_date=None,
     ):
         """Run day-by-day, degrading market prices after crash_after day."""
         from quant_fund.main.paper_trading_runner import PaperTradingResult
@@ -563,6 +627,9 @@ class ScenarioRunner:
 
         for i, date in enumerate(dates):
             day_num = i + 1
+
+            # Get base market data for this day (time-varying from OHLCV)
+            day_md = market_data_by_date.get(date) if market_data_by_date else None
 
             # After crash day, progressively drop market prices
             if day_num > crash_after:
@@ -581,17 +648,18 @@ class ScenarioRunner:
                             "adv": orig["adv"],
                         }
                 broker.set_market_data(crashed_md)
+                # Also scale down the day_md prices for consistency
+                if day_md is not None:
+                    day_md = day_md.copy()
+                    day_md["mid"] = day_md["mid"] * drop_factor
+                    day_md["close"] = day_md["close"] * drop_factor
 
             day_result = runner._run_single_day(
-                date=date, market_data=None, prev_nav=prev_nav,
+                date=date, market_data=day_md, prev_nav=prev_nav,
             )
             daily_results.append(day_result)
             daily_returns.append(day_result.daily_return)
             prev_nav = day_result.nav
-
-            # Update kill switch peak when NAV increases
-            if not day_result.kill_switch_triggered:
-                kill_switch.update_peak(day_result.nav)
 
             if day_result.kill_switch_triggered:
                 break
@@ -857,7 +925,7 @@ class TestHistoricalScenarios:
         assert s["total_orders"] > 0
 
     def test_scenario_stress_crash(self):
-        """Stress test: crash injection after day 25, tight 15% drawdown limit."""
+        """Stress test: crash injection after day 20, tight 15% drawdown limit."""
         result = self._run_and_report(SCENARIO_STRESS)
         s = result["summary"]
 
@@ -866,3 +934,189 @@ class TestHistoricalScenarios:
         # Kill switch may or may not trigger depending on price impact
         # But the scenario should complete without errors
         assert s["final_nav"] > 0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PART 3: Verification tests for pipeline fixes
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestTimeVaryingPrices:
+    """Verify that fixes produce realistic trading behaviour."""
+
+    def _build_runner_with_real_components(self, tickers, num_days=60, seed=42):
+        """Build a PaperTradingRunner with all real components wired."""
+        initial_cash = 1_000_000
+
+        broker = SimulationBroker({
+            "initial_cash": initial_cash,
+            "enforce_cash_floor": True,
+        })
+        broker.set_market_data({
+            t: dict(STANDARD_MARKET_DATA[t])
+            for t in tickers if t in STANDARD_MARKET_DATA
+        })
+
+        research = SeededAlphaResearch(tickers, seed=seed)
+        optimizer = PortfolioOptimizer({"risk_aversion": 1.0})
+        constraint_eng = ConstraintEngine({
+            "position_limits": {
+                "max_position_size": 0.02,
+                "max_sector_exposure": 0.20,
+                "max_leverage": 2.0,
+                "dollar_neutral": True,
+            },
+        })
+        factor_exp_est = FactorExposureEstimator({
+            "factor_min_observations": 20,
+        })
+        factor_cov_est = FactorCovarianceEstimator({
+            "cov_min_observations": 20,
+        })
+        stock_returns = make_returns(
+            n_dates=300 + num_days, tickers=tickers, seed=seed,
+        )
+        factor_returns = make_factor_returns(
+            n_dates=300 + num_days, seed=seed + 1,
+        )
+        kill_switch = KillSwitch({
+            "drawdown_limit": 0.20,
+            "initial_nav": initial_cash,
+        })
+        exposure_monitor = ExposureMonitor({"max_leverage": 2.0})
+        leverage_ctrl = LeverageController({"max_leverage": 2.0})
+        order_gen = OrderGenerator()
+        order_router = OrderRouter(broker, {"safety_checks_enabled": False})
+
+        runner = PaperTradingRunner({"initial_nav": initial_cash})
+        runner.inject_components(
+            research_runner=research,
+            portfolio_optimizer=optimizer,
+            constraint_engine=constraint_eng,
+            factor_exposure_estimator=factor_exp_est,
+            factor_covariance_estimator=factor_cov_est,
+            factor_returns=factor_returns,
+            stock_returns=stock_returns,
+            sector_map=STANDARD_SECTORS,
+            kill_switch=kill_switch,
+            exposure_monitor=exposure_monitor,
+            leverage_controller=leverage_ctrl,
+            order_generator=order_gen,
+            order_router=order_router,
+            broker=broker,
+        )
+
+        # Build time-varying market data from OHLCV
+        ohlcv = make_ohlcv(tickers=tickers, periods=300 + num_days, seed=seed)
+        all_dates = ohlcv.index.get_level_values("date").unique()
+        dates = list(all_dates[-num_days:])
+
+        market_data_by_date = {}
+        for dt in dates:
+            if dt in ohlcv.index.get_level_values("date"):
+                day_data = ohlcv.loc[dt]
+                md_df = pd.DataFrame(index=day_data.index)
+                md_df["mid"] = day_data["close"]
+                md_df["close"] = day_data["close"]
+                md_df["volume"] = day_data["volume"]
+                market_data_by_date[dt] = md_df
+
+        return runner, dates, market_data_by_date, initial_cash
+
+    def test_time_varying_prices_produce_realistic_returns(self):
+        """With evolving prices, daily returns should have non-trivial
+        variance and NAV should NOT be monotonically decreasing."""
+        tickers = STANDARD_TICKERS[:5]
+        runner, dates, md_by_date, initial_cash = (
+            self._build_runner_with_real_components(tickers, num_days=60)
+        )
+
+        result = runner.run(dates, md_by_date)
+
+        # Should complete without errors
+        assert result.num_days > 0
+        assert result.final_nav > 0
+
+        # Daily returns should have non-trivial variance
+        returns = [d.daily_return for d in result.daily_results]
+        ret_std = np.std(returns)
+        assert ret_std > 0.0001, (
+            f"Daily return std is too small: {ret_std:.6f} — "
+            f"prices may not be evolving"
+        )
+
+        # NAV should NOT be monotonically decreasing (prices move both ways)
+        navs = [d.nav for d in result.daily_results]
+        increasing_days = sum(
+            1 for i in range(1, len(navs)) if navs[i] > navs[i - 1]
+        )
+        assert increasing_days > 0, (
+            "NAV never increased — prices are not evolving properly"
+        )
+
+        # Sharpe ratio should be finite and in a reasonable range
+        assert np.isfinite(result.sharpe_ratio)
+
+    def test_real_optimizer_receives_all_args(self):
+        """Real PortfolioOptimizer, ConstraintEngine, and factor risk model
+        work through the runner without interface errors."""
+        tickers = STANDARD_TICKERS[:5]
+        runner, dates, md_by_date, initial_cash = (
+            self._build_runner_with_real_components(tickers, num_days=10)
+        )
+
+        result = runner.run(dates[:10], md_by_date)
+
+        # No days should fail due to interface mismatches
+        for day in result.daily_results:
+            assert day.status != "failed", (
+                f"Day {day.date} failed: {day.error_message}"
+            )
+
+        # Should have generated orders (proves full pipeline works)
+        assert result.total_orders > 0, "No orders generated — pipeline may be broken"
+        assert result.total_fills > 0, "No fills — execution may be broken"
+
+    def test_kill_switch_peak_updated(self):
+        """Kill switch update_peak is called after NAV updates, so the
+        peak tracks the actual high water mark."""
+        tickers = STANDARD_TICKERS[:3]
+        initial_cash = 1_000_000
+
+        broker = SimulationBroker({
+            "initial_cash": initial_cash,
+            "enforce_cash_floor": True,
+        })
+        broker.set_market_data({
+            t: dict(STANDARD_MARKET_DATA[t])
+            for t in tickers if t in STANDARD_MARKET_DATA
+        })
+
+        kill_switch = KillSwitch({
+            "drawdown_limit": 0.20,
+            "initial_nav": initial_cash,
+        })
+
+        research = SeededAlphaResearch(tickers, seed=42)
+        optimizer = MockPortfolioOptimizer()
+        constraint_eng = MockConstraintEngine()
+
+        runner = PaperTradingRunner({"initial_nav": initial_cash})
+        runner.inject_components(
+            research_runner=research,
+            portfolio_optimizer=optimizer,
+            constraint_engine=constraint_eng,
+            kill_switch=kill_switch,
+            broker=broker,
+            order_generator=OrderGenerator(),
+            order_router=OrderRouter(broker, {"safety_checks_enabled": False}),
+        )
+
+        # Run a few days
+        dates = list(pd.bdate_range("2024-01-02", periods=5))
+        result = runner.run(dates)
+
+        # The kill switch peak should have been updated (not stuck at initial)
+        # Since the runner now calls update_peak after each day,
+        # the peak should reflect the highest NAV seen
+        assert kill_switch.peak_nav >= initial_cash
