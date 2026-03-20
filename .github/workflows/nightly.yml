@@ -1,0 +1,32 @@
+name: Nightly Full Suite
+
+on:
+  schedule:
+    - cron: "0 2 * * *"  # 2 AM UTC
+
+jobs:
+  full-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Run all tests except weekly
+        run: pytest tests/ -m "not tier5" --timeout=3600 -q
+        env:
+          PYTHONPATH: .
+      - name: Run benchmarks
+        run: pytest tests/benchmarks/ -m benchmark --timeout=600 -q
+        env:
+          PYTHONPATH: .
+      - name: Run stress tests
+        run: pytest tests/stress/ -m stress --timeout=1800 -q
+        env:
+          PYTHONPATH: .
+      - name: Run regression tests
+        run: pytest tests/regression/ --timeout=600 -q
+        env:
+          PYTHONPATH: .

@@ -1,0 +1,20 @@
+name: Weekly Stability
+
+on:
+  schedule:
+    - cron: "0 0 * * 0"  # Sunday midnight UTC
+
+jobs:
+  stability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Run stability tests
+        run: pytest tests/stability/ -m "tier5" --timeout=14400 -v
+        env:
+          PYTHONPATH: .

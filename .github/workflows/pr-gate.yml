@@ -1,0 +1,33 @@
+name: PR Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff mypy
+      - run: ruff check quant_fund/ tests/
+      - run: ruff format --check quant_fund/ tests/
+      - run: mypy quant_fund/ --ignore-missing-imports
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: pytest tests/ -m "tier1 or tier2" --timeout=300 -q
+        env:
+          PYTHONPATH: .
+      - run: pytest tests/ --cov=quant_fund --cov-fail-under=85 --cov-report=term-missing
+        env:
+          PYTHONPATH: .

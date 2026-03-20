@@ -1,0 +1,24 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "bench_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+markers = [
+    "tier1: Pre-commit smoke tests (< 30s)",
+    "tier2: PR gate tests (< 5min)",
+    "tier3: Post-merge integration (< 15min)",
+    "tier4: Nightly full suite (< 60min)",
+    "tier5: Weekly stability (long-duration)",
+    "unit: Isolated unit test, no I/O",
+    "integration: Multi-module interaction",
+    "e2e: Full pipeline test",
+    "stress: Fault injection and extreme load",
+    "benchmark: Performance measurement",
+    "slow: Execution time > 10s",
+    "stability: Long-duration stability test",
+]
+
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
