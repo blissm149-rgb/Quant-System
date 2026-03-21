@@ -99,9 +99,9 @@ class BacktestHarness:
                     daily_returns[next_date] = ret
                 continue
 
-            # Get point-in-time data
+            # Get point-in-time data (permissive since we iterate over the full dataset)
             try:
-                aligned = self._alignment_engine.get_aligned_data(
+                aligned = self._alignment_engine.get_aligned_data_permissive(
                     ohlcv, as_of, lookback
                 )
             except Exception:
