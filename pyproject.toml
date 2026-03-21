@@ -18,6 +18,7 @@ markers = [
     "slow: Execution time > 10s",
     "stability: Long-duration stability test",
     "regression: Deterministic reproducibility and golden file tests",
+    "validation: Validation, robustness and risk framework tests",
 ]
 
 filterwarnings = [
