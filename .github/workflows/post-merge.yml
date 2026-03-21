@@ -13,6 +13,6 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - run: pytest tests/ -m "tier1 or tier2 or tier3" --timeout=900 -q
+      - run: pytest tests/ -m "tier1 or tier2 or tier3" -q
         env:
           PYTHONPATH: .

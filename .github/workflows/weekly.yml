@@ -15,6 +15,6 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt
       - name: Run stability tests
-        run: pytest tests/stability/ -m "tier5" --timeout=14400 -v
+        run: pytest tests/stability/ -m "tier5" -v
         env:
           PYTHONPATH: .

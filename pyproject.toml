@@ -20,6 +20,8 @@ markers = [
     "regression: Deterministic reproducibility and golden file tests",
 ]
 
+timeout = 300
+
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]

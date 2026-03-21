@@ -15,18 +15,18 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt
       - name: Run all tests except weekly
-        run: pytest tests/ -m "not tier5" --timeout=3600 -q
+        run: pytest tests/ -m "not tier5" -q
         env:
           PYTHONPATH: .
       - name: Run benchmarks
-        run: pytest tests/benchmarks/ -m benchmark --timeout=600 -q
+        run: pytest tests/benchmarks/ -m benchmark -q
         env:
           PYTHONPATH: .
       - name: Run stress tests
-        run: pytest tests/stress/ -m stress --timeout=1800 -q
+        run: pytest tests/stress/ -m stress -q
         env:
           PYTHONPATH: .
       - name: Run regression tests
-        run: pytest tests/regression/ --timeout=600 -q
+        run: pytest tests/regression/ -q
         env:
           PYTHONPATH: .

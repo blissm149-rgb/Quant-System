@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - run: pytest tests/ -m "tier1 or tier2" --timeout=300 -q
+      - run: pytest tests/ -m "tier1 or tier2" -q
         env:
           PYTHONPATH: .
       - run: pytest tests/ --cov=quant_fund --cov-fail-under=85 --cov-report=term-missing
