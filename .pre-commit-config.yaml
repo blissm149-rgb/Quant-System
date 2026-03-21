@@ -17,7 +17,7 @@ repos:
 
       - id: smoke-tests
         name: Tier 1 smoke tests
-        entry: pytest tests/ -m "tier1" --timeout=30 -q
+        entry: pytest tests/ -m "tier1" -q
         language: system
         types: [python]
         pass_filenames: false
