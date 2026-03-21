@@ -30,6 +30,11 @@ class GradientBoostedTreeModel(BaseFeatureGenerator):
         self._learning_rate = cfg.get("gbt_learning_rate", 0.05)
         self._forward_days = cfg.get("gbt_forward_days", 5)
         self._min_train_days = cfg.get("gbt_min_train_days", 252)
+        self._min_samples_leaf = cfg.get("gbt_min_samples_leaf", 20)
+        self._max_leaf_nodes = cfg.get("gbt_max_leaf_nodes", 50)
+        self._subsample = cfg.get("gbt_subsample", 0.8)
+        self._max_features = cfg.get("gbt_max_features", 0.7)
+        self._seed = cfg.get("random_seed", 42)
         self._model = None
         super().__init__(
             feature_name="gbt_alpha",
@@ -104,20 +109,42 @@ class GradientBoostedTreeModel(BaseFeatureGenerator):
             logger.warning("Insufficient training data: %d < %d", len(X), self._min_train_days)
             return {"error": "insufficient data", "n_samples": len(X)}
 
+        # Temporal split for OOS evaluation
+        split_idx = int(len(X) * 0.9)
+        X_train, X_val = X[:split_idx], X[split_idx:]
+        y_train, y_val = y[:split_idx], y[split_idx:]
+
         model = GradientBoostingRegressor(
             n_estimators=self._n_estimators,
             max_depth=self._max_depth,
             learning_rate=self._learning_rate,
-            random_state=42,
+            min_samples_leaf=self._min_samples_leaf,
+            max_leaf_nodes=self._max_leaf_nodes,
+            subsample=self._subsample,
+            max_features=self._max_features,
+            random_state=self._seed,
         )
-        model.fit(X, y)
+        model.fit(X_train, y_train)
         self._model = model
 
-        train_score = model.score(X, y)
+        train_r2 = model.score(X_train, y_train)
+        oos_r2 = model.score(X_val, y_val) if len(X_val) > 0 else 0.0
+
+        # OOS IC (Spearman rank correlation)
+        if len(X_val) > 5:
+            preds_val = model.predict(X_val)
+            oos_ic = float(pd.Series(preds_val).corr(pd.Series(y_val), method="spearman"))
+        else:
+            oos_ic = 0.0
+
         return {
             "n_samples": len(X),
+            "n_train_samples": len(X_train),
+            "n_val_samples": len(X_val),
             "n_features": X.shape[1],
-            "train_r2": train_score,
+            "train_r2": train_r2,
+            "oos_r2": oos_r2,
+            "oos_ic": oos_ic if not np.isnan(oos_ic) else 0.0,
         }
 
     def get_feature_importance(self) -> Optional[np.ndarray]:

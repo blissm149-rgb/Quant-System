@@ -1,7 +1,7 @@
-"""Random forest model for directional return prediction.
+"""Regularized linear models for return prediction baselines.
 
-Ensemble classifier used as a validation signal alongside GBT.
-Rolling expanding-window approach.
+Supports Ridge, Lasso, and ElasticNet regression with temporal
+train/validation split and OOS evaluation.
 """
 
 import logging
@@ -15,26 +15,26 @@ from quant_fund.feature_factory.base_feature_generator import BaseFeatureGenerat
 logger = logging.getLogger(__name__)
 
 
-class RandomForestModel(BaseFeatureGenerator):
-    """Random forest classifier for directional prediction.
+class RegularizedLinearModel(BaseFeatureGenerator):
+    """Regularized linear model (Ridge/Lasso/ElasticNet) for alpha prediction.
 
-    Predicts probability of positive forward return. Used as a
-    validation signal alongside the primary GBT model.
+    Provides a simple, interpretable baseline against which tree-based
+    and neural models should be compared.
     """
 
     def __init__(self, config: Optional[dict] = None):
         cfg = config or {}
-        self._n_estimators = cfg.get("rf_n_estimators", 200)
-        self._max_depth = cfg.get("rf_max_depth", 8)
-        self._forward_days = cfg.get("rf_forward_days", 5)
-        self._min_train_days = cfg.get("rf_min_train_days", 252)
-        self._min_samples_leaf = cfg.get("rf_min_samples_leaf", 10)
-        self._max_features = cfg.get("rf_max_features", "sqrt")
+        self._model_type = cfg.get("linear_model_type", "ridge")
+        self._alpha = cfg.get("linear_alpha", 1.0)
+        self._l1_ratio = cfg.get("linear_l1_ratio", 0.5)  # for ElasticNet
+        self._forward_days = cfg.get("linear_forward_days", 5)
+        self._min_train_days = cfg.get("linear_min_train_days", 252)
         self._seed = cfg.get("random_seed", 42)
         self._model = None
+        self._scaler = None
         super().__init__(
-            feature_name="rf_alpha",
-            lookback_days=cfg.get("rf_lookback_days", 504),
+            feature_name=f"{self._model_type}_alpha",
+            lookback_days=cfg.get("linear_lookback_days", 504),
             recompute_frequency="daily",
             config=config,
         )
@@ -60,14 +60,14 @@ class RandomForestModel(BaseFeatureGenerator):
             if td.empty:
                 result[ticker] = np.nan
                 continue
-            latest_features = td[feature_cols].iloc[-1:].values
-            if np.any(np.isnan(latest_features)):
+            latest = td[feature_cols].iloc[-1:].values
+            if np.any(np.isnan(latest)):
                 result[ticker] = np.nan
                 continue
             try:
-                prob = self._model.predict_proba(latest_features)[0]
-                # Use probability of positive class minus 0.5 as signal
-                result[ticker] = float(prob[1] - 0.5) if len(prob) > 1 else 0.0
+                if self._scaler is not None:
+                    latest = self._scaler.transform(latest)
+                result[ticker] = float(self._model.predict(latest)[0])
             except Exception:
                 result[ticker] = np.nan
 
@@ -78,54 +78,54 @@ class RandomForestModel(BaseFeatureGenerator):
         feature_matrix: pd.DataFrame,
         forward_returns: pd.Series,
     ) -> dict:
-        """Train the random forest classifier.
-
-        Args:
-            feature_matrix: Features DataFrame.
-            forward_returns: Forward returns; converted to binary labels (>0 = 1).
-
-        Returns:
-            Training metrics dict.
-        """
+        """Train regularized linear model with temporal OOS split."""
         try:
-            from sklearn.ensemble import RandomForestClassifier
+            from sklearn.linear_model import Ridge, Lasso, ElasticNet
+            from sklearn.preprocessing import StandardScaler
         except ImportError:
-            logger.error("scikit-learn required for RF model")
             return {"error": "sklearn not installed"}
 
         valid_mask = feature_matrix.notna().all(axis=1) & forward_returns.notna()
         X = feature_matrix[valid_mask].values
-        y = (forward_returns[valid_mask] > 0).astype(int).values
+        y = forward_returns[valid_mask].values
 
         if len(X) < self._min_train_days:
             return {"error": "insufficient data", "n_samples": len(X)}
 
-        # Temporal split for OOS evaluation
+        # Temporal split: 90% train, 10% validation
         split_idx = int(len(X) * 0.9)
         X_train, X_val = X[:split_idx], X[split_idx:]
         y_train, y_val = y[:split_idx], y[split_idx:]
 
-        model = RandomForestClassifier(
-            n_estimators=self._n_estimators,
-            max_depth=self._max_depth,
-            min_samples_leaf=self._min_samples_leaf,
-            max_features=self._max_features,
-            random_state=self._seed,
-            n_jobs=-1,
-        )
-        model.fit(X_train, y_train)
-        self._model = model
+        # Scale on training data only
+        scaler = StandardScaler()
+        X_train_s = scaler.fit_transform(X_train)
+        X_val_s = scaler.transform(X_val)
 
-        train_accuracy = model.score(X_train, y_train)
-        oos_accuracy = model.score(X_val, y_val) if len(X_val) > 0 else 0.0
+        model_classes = {"ridge": Ridge, "lasso": Lasso, "elasticnet": ElasticNet}
+        cls = model_classes.get(self._model_type, Ridge)
+
+        kwargs = {"alpha": self._alpha, "random_state": self._seed}
+        if self._model_type == "elasticnet":
+            kwargs["l1_ratio"] = self._l1_ratio
+
+        model = cls(**kwargs)
+        model.fit(X_train_s, y_train)
+
+        self._model = model
+        self._scaler = scaler
+
+        train_r2 = model.score(X_train_s, y_train)
+        oos_r2 = model.score(X_val_s, y_val)
 
         return {
             "n_samples": len(X),
             "n_train_samples": len(X_train),
             "n_val_samples": len(X_val),
             "n_features": X.shape[1],
-            "train_accuracy": train_accuracy,
-            "oos_accuracy": oos_accuracy,
+            "train_r2": train_r2,
+            "oos_r2": oos_r2,
+            "model_type": self._model_type,
         }
 
     def validate(self, feature_output: pd.Series) -> bool:
