@@ -71,6 +71,7 @@ class ResearchRunner:
         self._signal_ranking = None
         self._alpha_monitor = None
         self._ic_monitor = None
+        self._feature_selector = None
 
         self._results: List[ResearchResult] = []
 
@@ -83,6 +84,7 @@ class ResearchRunner:
         signal_ranking=None,
         alpha_monitor=None,
         ic_monitor=None,
+        feature_selector=None,
     ) -> None:
         """Inject pipeline components.
 
@@ -102,6 +104,8 @@ class ResearchRunner:
             self._alpha_monitor = alpha_monitor
         if ic_monitor is not None:
             self._ic_monitor = ic_monitor
+        if feature_selector is not None:
+            self._feature_selector = feature_selector
 
     def run_cycle(
         self,
@@ -169,6 +173,21 @@ class ResearchRunner:
                         feature_matrix
                     )
 
+                # Step 4b: Feature selection (if selector and target available)
+                if self._feature_selector is not None:
+                    target = self._get_selection_target(data, feature_matrix)
+                    if target is not None:
+                        ranking = self._feature_selector.select(
+                            feature_matrix, target
+                        )
+                        if ranking.selected_features:
+                            feature_matrix = feature_matrix[ranking.selected_features]
+                            logger.info(
+                                "Feature selection: kept %d/%d features",
+                                len(ranking.selected_features),
+                                len(ranking.selected_features) + len(ranking.removed_features),
+                            )
+
                 # Step 5: Compute alpha scores
                 if self._signal_ranking is not None:
                     alpha_scores = self._signal_ranking.combine(
@@ -222,6 +241,37 @@ class ResearchRunner:
             result = self.run_cycle(as_of=dt, market_data=data)
             results.append(result)
         return results
+
+    def _get_selection_target(
+        self,
+        data: pd.DataFrame,
+        feature_matrix: pd.DataFrame,
+    ) -> Optional[pd.Series]:
+        """Extract a target variable for feature selection.
+
+        Uses the 'close' column to compute forward returns if available.
+        Returns None if no suitable target can be derived.
+        """
+        if "close" not in data.columns:
+            return None
+
+        try:
+            if isinstance(data.index, pd.MultiIndex):
+                # Multi-index with ticker level: use cross-sectional returns
+                close = data["close"].unstack(level="ticker")
+                returns = close.pct_change(5).iloc[-1]
+                common = feature_matrix.index.intersection(returns.index)
+                if len(common) < 30:
+                    return None
+                return returns[common]
+            else:
+                returns = data["close"].pct_change(5)
+                common = feature_matrix.index.intersection(returns.index)
+                if len(common) < 30:
+                    return None
+                return returns[common]
+        except Exception:
+            return None
 
     @property
     def results(self) -> List[ResearchResult]:

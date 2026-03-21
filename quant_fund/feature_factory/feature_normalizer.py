@@ -136,6 +136,69 @@ class FeatureNormalizer:
         normalized = 2.0 * (ranked - 1) / (n_valid - 1) - 1.0
         return normalized
 
+    def normalize_temporal(
+        self,
+        feature_series: pd.DataFrame,
+        method: str = "zscore",
+        min_periods: int = 60,
+    ) -> pd.DataFrame:
+        """Normalise features using expanding-window statistics (temporal).
+
+        At each row t, statistics (mean, std) are computed using only
+        rows [0, t] — no future data leaks into the normalisation.
+
+        Args:
+            feature_series: DataFrame with DatetimeIndex (rows are dates,
+                columns are features). Each column is a single feature's
+                time series for one ticker or the cross-sectional mean.
+            method: "zscore" (expanding z-score) or "percentile"
+                (expanding percentile rank).
+            min_periods: Minimum number of observations before producing
+                a normalised value. Earlier rows are set to NaN.
+
+        Returns:
+            DataFrame of same shape with temporally normalised values.
+        """
+        if method == "zscore":
+            return self._temporal_zscore(feature_series, min_periods)
+        elif method == "percentile":
+            return self._temporal_percentile(feature_series, min_periods)
+        else:
+            raise ValueError(f"Unknown temporal normalization method: {method}")
+
+    def _temporal_zscore(
+        self, df: pd.DataFrame, min_periods: int
+    ) -> pd.DataFrame:
+        """Expanding-window z-score normalisation."""
+        expanding_mean = df.expanding(min_periods=min_periods).mean()
+        expanding_std = df.expanding(min_periods=min_periods).std()
+        # Avoid division by zero
+        expanding_std = expanding_std.replace(0, np.nan)
+        return (df - expanding_mean) / expanding_std
+
+    def _temporal_percentile(
+        self, df: pd.DataFrame, min_periods: int
+    ) -> pd.DataFrame:
+        """Expanding-window percentile rank normalisation."""
+        result = pd.DataFrame(index=df.index, columns=df.columns, dtype=float)
+        for col in df.columns:
+            vals = df[col]
+            for i in range(len(vals)):
+                if i + 1 < min_periods:
+                    result.iloc[i, result.columns.get_loc(col)] = np.nan
+                    continue
+                window = vals.iloc[: i + 1].dropna()
+                if len(window) < min_periods:
+                    result.iloc[i, result.columns.get_loc(col)] = np.nan
+                    continue
+                current = vals.iloc[i]
+                if pd.isna(current):
+                    result.iloc[i, result.columns.get_loc(col)] = np.nan
+                    continue
+                pct = (window < current).sum() / len(window)
+                result.iloc[i, result.columns.get_loc(col)] = pct
+        return result
+
     def _percentile_normalize(self, scores: pd.Series) -> pd.Series:
         """Percentile normalisation producing values in [0, 1].
 
