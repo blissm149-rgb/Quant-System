@@ -17,6 +17,7 @@ markers = [
     "benchmark: Performance measurement",
     "slow: Execution time > 10s",
     "stability: Long-duration stability test",
+    "regression: Deterministic reproducibility and golden file tests",
 ]
 
 filterwarnings = [
