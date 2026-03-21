@@ -72,6 +72,10 @@ class ResearchRunner:
         self._alpha_monitor = None
         self._ic_monitor = None
         self._feature_selector = None
+        self._ml_models = []
+        self._retrain_frequency = cfg.get("retrain_frequency", 21)
+        self._cycles_since_retrain = 0
+        self._oos_metrics: List[dict] = []
 
         self._results: List[ResearchResult] = []
 
@@ -106,6 +110,10 @@ class ResearchRunner:
             self._ic_monitor = ic_monitor
         if feature_selector is not None:
             self._feature_selector = feature_selector
+
+    def inject_ml_models(self, models: list) -> None:
+        """Inject ML models that support train_model() for periodic retraining."""
+        self._ml_models = models
 
     def run_cycle(
         self,
@@ -197,6 +205,13 @@ class ResearchRunner:
             else:
                 logger.info("No features computed for %s", as_of)
 
+            # Step 5b: Retrain ML models periodically
+            if self._ml_models and features:
+                self._cycles_since_retrain += 1
+                if self._cycles_since_retrain >= self._retrain_frequency:
+                    self._retrain_models(feature_matrix, data)
+                    self._cycles_since_retrain = 0
+
             # Step 6: Update monitoring
             if self._alpha_monitor is not None and result.alpha_scores is not None:
                 self._alpha_monitor.update(result.alpha_scores)
@@ -272,6 +287,39 @@ class ResearchRunner:
                 return returns[common]
         except Exception:
             return None
+
+    def _retrain_models(
+        self,
+        feature_matrix: pd.DataFrame,
+        data: pd.DataFrame,
+    ) -> None:
+        """Retrain all ML models on current expanding window of data."""
+        target = self._get_selection_target(data, feature_matrix)
+        if target is None:
+            return
+
+        for model in self._ml_models:
+            if hasattr(model, "train_model"):
+                try:
+                    metrics = model.train_model(feature_matrix, target)
+                    self._track_oos_performance(model, metrics)
+                except Exception as e:
+                    logger.warning("Model retrain failed: %s", e)
+
+    def _track_oos_performance(self, model, metrics: dict) -> None:
+        """Record OOS metrics from a model training run."""
+        model_name = getattr(model, "feature_name", str(model))
+        record = {"model_name": model_name}
+        record.update(metrics)
+        self._oos_metrics.append(record)
+
+    @property
+    def oos_metrics(self) -> List[dict]:
+        return list(self._oos_metrics)
+
+    @property
+    def retrain_count(self) -> int:
+        return len(self._oos_metrics)
 
     @property
     def results(self) -> List[ResearchResult]:

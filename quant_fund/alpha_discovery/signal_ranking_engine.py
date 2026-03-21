@@ -15,6 +15,24 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+def _benjamini_hochberg(p_values: list, fdr: float = 0.10) -> list:
+    """Benjamini-Hochberg FDR correction."""
+    m = len(p_values)
+    if m == 0:
+        return []
+    sorted_indices = np.argsort(p_values)
+    sorted_p = np.array(p_values)[sorted_indices]
+    thresholds = np.array([(i + 1) / m * fdr for i in range(m)])
+    reject = sorted_p <= thresholds
+    if not np.any(reject):
+        return [False] * m
+    max_k = np.max(np.where(reject))
+    result = [False] * m
+    for i in range(max_k + 1):
+        result[sorted_indices[i]] = True
+    return result
+
+
 @dataclass
 class SignalScore:
     """Evaluation score for a candidate signal."""
@@ -263,3 +281,90 @@ class SignalRankingEngine:
                 corr = abs(merged.iloc[:, 0].corr(merged.iloc[:, 1], method="spearman"))
                 max_corr = max(max_corr, corr if not np.isnan(corr) else 0.0)
         return max_corr
+
+    def evaluate_signal_with_correction(
+        self,
+        signals: Dict[str, pd.DataFrame],
+        forward_returns: pd.DataFrame,
+        fdr: float = 0.10,
+        existing_signals: Optional[pd.DataFrame] = None,
+    ) -> List[SignalScore]:
+        """Evaluate multiple signals with Benjamini-Hochberg FDR correction.
+
+        Tests each signal's IC against zero, then applies BH correction to
+        control the false discovery rate across all tests.
+
+        Args:
+            signals: Dict mapping signal names to signal DataFrames.
+            forward_returns: Forward returns for IC computation.
+            fdr: Target false discovery rate (default 0.10).
+            existing_signals: Existing live signals for crowding check.
+
+        Returns:
+            List of SignalScore with `passed` reflecting BH correction.
+        """
+        from scipy import stats as scipy_stats
+
+        scores = []
+        p_values = []
+        for name, sig_df in signals.items():
+            score = self.evaluate_signal(sig_df, forward_returns, existing_signals)
+            score.signal_name = name
+            scores.append(score)
+
+            # Two-sided p-value from IC t-statistic
+            if score.ic_tstat != 0 and not np.isnan(score.ic_tstat):
+                ic_series = self._compute_daily_ic(sig_df, forward_returns)
+                n = len(ic_series)
+                if n > 1:
+                    p = 2 * (1 - scipy_stats.t.cdf(abs(score.ic_tstat), df=n - 1))
+                else:
+                    p = 1.0
+            else:
+                p = 1.0
+            p_values.append(p)
+
+        # Apply BH correction
+        significant = _benjamini_hochberg(p_values, fdr=fdr)
+        for score, is_sig in zip(scores, significant):
+            score.passed = is_sig
+
+        scores.sort(key=lambda s: s.composite_score, reverse=True)
+        return scores
+
+    def bootstrap_ic_ci(
+        self,
+        signal_values: pd.DataFrame,
+        forward_returns: pd.DataFrame,
+        n_bootstrap: int = 1000,
+        ci: float = 0.95,
+        seed: int = 42,
+    ) -> tuple:
+        """Bootstrap confidence interval for mean IC.
+
+        Args:
+            signal_values: Signal DataFrame.
+            forward_returns: Forward returns DataFrame.
+            n_bootstrap: Number of bootstrap samples.
+            ci: Confidence level.
+            seed: Random seed.
+
+        Returns:
+            (lower, upper) confidence interval bounds.
+        """
+        ic_series = self._compute_daily_ic(signal_values, forward_returns)
+        if len(ic_series) < 10:
+            return (0.0, 0.0)
+
+        rng = np.random.default_rng(seed)
+        n = len(ic_series)
+        boot_means = []
+        for _ in range(n_bootstrap):
+            idx = rng.integers(0, n, size=n)
+            boot_means.append(ic_series.iloc[idx].mean())
+
+        boot_means.sort()
+        alpha = (1 - ci) / 2
+        lower = boot_means[int(alpha * len(boot_means))]
+        upper = boot_means[int((1 - alpha) * len(boot_means))]
+        return (float(lower), float(upper))
