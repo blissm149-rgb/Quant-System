@@ -356,7 +356,7 @@ class TechnicalIndicatorEngine:
         """
         features = {}
         for gen in self._generators:
-            aligned = self._alignment_engine.get_aligned_data_permissive(
+            aligned = self._alignment_engine.get_aligned_data(
                 data, as_of=as_of, lookback_days=gen.lookback_days
             )
             if aligned.empty:

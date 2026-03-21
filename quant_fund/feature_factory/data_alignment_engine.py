@@ -5,6 +5,7 @@ strictly point-in-time safe. Any attempt to access data at or after the
 as_of timestamp raises a LookAheadError.
 """
 
+import warnings
 from typing import Optional
 
 import pandas as pd
@@ -72,9 +73,16 @@ class DataAlignmentEngine:
     ) -> pd.DataFrame:
         """Like get_aligned_data but silently filters future data instead of raising.
 
-        Use only when the caller has already validated the data upstream and
-        the filtering is a safety net, not the primary guard.
+        .. deprecated::
+            Use :meth:`get_aligned_data` for strict point-in-time enforcement.
+            This method silently masks look-ahead bias violations.
         """
+        warnings.warn(
+            "get_aligned_data_permissive() silently filters future data. "
+            "Use get_aligned_data() for strict point-in-time enforcement.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         dates = self._extract_dates(df)
 
         lookback_start = as_of - pd.Timedelta(days=lookback_days)

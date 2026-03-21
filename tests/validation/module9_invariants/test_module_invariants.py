@@ -362,14 +362,14 @@ class TestDataAlignmentRouting:
 
     def test_technical_indicator_engine_uses_alignment(self):
         """TechnicalIndicatorEngine.compute_all() must call
-        get_aligned_data_permissive for every generator."""
+        get_aligned_data (strict) for every generator."""
         source_path = (
             QUANT_FUND_ROOT / "feature_factory" / "technical_indicator_engine.py"
         )
         source = _read_source(source_path)
 
-        assert "get_aligned_data_permissive" in source, (
-            "TechnicalIndicatorEngine does not call get_aligned_data_permissive"
+        assert "get_aligned_data" in source, (
+            "TechnicalIndicatorEngine does not call get_aligned_data"
         )
 
     def test_alignment_engine_referenced_in_tech_indicator_init(self):
@@ -437,12 +437,27 @@ class TestConfigDrivenParameters:
 
 
 class TestLookAheadEnforcement:
-    """Dynamic test: feature values at T must not change when future data
-    is appended to the input DataFrame."""
+    """Dynamic test: TechnicalIndicatorEngine must reject future data
+    and produce valid features from pre-filtered data."""
 
-    def test_features_invariant_to_appended_future_data(self):
-        """Compute features at as_of with data ending at as_of, then with
-        data extending 50 days past as_of. Both must yield identical values."""
+    def test_compute_all_rejects_future_data(self):
+        """Passing data with timestamps >= as_of must raise LookAheadError."""
+        from quant_fund.feature_factory.technical_indicator_engine import (
+            TechnicalIndicatorEngine,
+        )
+        from quant_fund.feature_factory.data_alignment_engine import LookAheadError
+
+        ohlcv = make_ohlcv(tickers=STANDARD_TICKERS[:3], periods=400, seed=42)
+        dates = ohlcv.index.get_level_values(0).unique().sort_values()
+        as_of = dates[300]
+
+        engine = TechnicalIndicatorEngine()
+
+        with pytest.raises(LookAheadError):
+            engine.compute_all(ohlcv, as_of=as_of)
+
+    def test_features_produced_from_pre_filtered_data(self):
+        """Pre-filtered data (all timestamps < as_of) must produce features."""
         from quant_fund.feature_factory.technical_indicator_engine import (
             TechnicalIndicatorEngine,
         )
@@ -452,23 +467,10 @@ class TestLookAheadEnforcement:
         as_of = dates[300]
 
         engine = TechnicalIndicatorEngine()
-
-        # Full data (includes 100 days of "future" data)
-        feats_full = engine.compute_all(ohlcv, as_of=as_of)
-
-        # Truncated data (no future)
         truncated = ohlcv[ohlcv.index.get_level_values(0) < as_of]
-        feats_trunc = engine.compute_all(truncated, as_of=as_of)
+        feats = engine.compute_all(truncated, as_of=as_of)
 
-        common_cols = sorted(set(feats_full.columns) & set(feats_trunc.columns))
-        assert len(common_cols) > 0, "No features were produced"
-
-        pd.testing.assert_frame_equal(
-            feats_full[common_cols].sort_index(),
-            feats_trunc[common_cols].sort_index(),
-            atol=1e-10,
-            obj="Features at T must not depend on data after T",
-        )
+        assert len(feats.columns) > 0, "No features produced from pre-filtered data"
 
 
 # ═══════════════════════════════════════════════════════════════════

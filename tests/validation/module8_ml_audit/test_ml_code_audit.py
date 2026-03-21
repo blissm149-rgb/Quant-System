@@ -266,32 +266,33 @@ class TestMLDataAlignment:
 class TestTechnicalIndicatorAlignment:
     """Verify the TechnicalIndicatorEngine enforces point-in-time safety."""
 
-    def test_compute_all_invariant_to_future_data(self):
-        """Feature values computed at as_of must be identical whether the
-        input DataFrame extends 50 days past as_of or stops exactly at as_of."""
+    def test_compute_all_rejects_future_data(self):
+        """Passing data that extends past as_of must raise LookAheadError,
+        proving the engine uses strict alignment."""
+        from quant_fund.feature_factory.data_alignment_engine import LookAheadError
+
         ohlcv = make_ohlcv(tickers=STANDARD_TICKERS[:3], periods=400, seed=42)
         dates = ohlcv.index.get_level_values(0).unique().sort_values()
         as_of = dates[300]
 
         engine = TechnicalIndicatorEngine()
 
-        # Full data (includes future)
-        feats_full = engine.compute_all(ohlcv, as_of=as_of)
+        with pytest.raises(LookAheadError):
+            engine.compute_all(ohlcv, as_of=as_of)
 
-        # Truncated data (no future)
+    def test_compute_all_succeeds_with_pre_filtered_data(self):
+        """Pre-filtered data (all timestamps < as_of) must produce valid features."""
+        ohlcv = make_ohlcv(tickers=STANDARD_TICKERS[:3], periods=400, seed=42)
+        dates = ohlcv.index.get_level_values(0).unique().sort_values()
+        as_of = dates[300]
+
+        engine = TechnicalIndicatorEngine()
+
         truncated = ohlcv[ohlcv.index.get_level_values(0) < as_of]
-        feats_trunc = engine.compute_all(truncated, as_of=as_of)
+        feats = engine.compute_all(truncated, as_of=as_of)
 
-        # Both must yield identical feature values
-        common_cols = sorted(set(feats_full.columns) & set(feats_trunc.columns))
-        assert len(common_cols) > 0, "No features were produced"
-
-        pd.testing.assert_frame_equal(
-            feats_full[common_cols].sort_index(),
-            feats_trunc[common_cols].sort_index(),
-            atol=1e-10,
-            obj="TechnicalIndicatorEngine features must not depend on future data",
-        )
+        assert len(feats.columns) > 0, "No features were produced"
+        assert len(feats) > 0, "No rows in feature output"
 
 
 # ── Test 6: Regularisation parameter audit ─────────────────────────

@@ -90,8 +90,16 @@ class NeuralNetworkPredictor(BaseFeatureGenerator):
         if len(X) < self._min_train_days:
             return {"error": "insufficient data", "n_samples": len(X)}
 
+        # Temporal split: train on first 90%, evaluate OOS on last 10%.
+        # Data is assumed chronologically ordered (by DatetimeIndex).
+        split_idx = int(len(X) * 0.9)
+        X_train, X_val = X[:split_idx], X[split_idx:]
+        y_train, y_val = y[:split_idx], y[split_idx:]
+
+        # Fit scaler on training data only to prevent information leakage.
         scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_val_scaled = scaler.transform(X_val)
 
         model = MLPRegressor(
             hidden_layer_sizes=self._hidden_layers,
@@ -99,19 +107,22 @@ class NeuralNetworkPredictor(BaseFeatureGenerator):
             max_iter=self._max_iter,
             alpha=self._alpha,
             random_state=42,
-            early_stopping=True,
-            validation_fraction=0.1,
+            early_stopping=False,
         )
-        model.fit(X_scaled, y)
+        model.fit(X_train_scaled, y_train)
 
         self._scaler = scaler
         self._model = model
 
-        train_score = model.score(X_scaled, y)
+        train_score = model.score(X_train_scaled, y_train)
+        oos_score = model.score(X_val_scaled, y_val) if len(X_val) > 0 else float("nan")
         return {
             "n_samples": len(X),
+            "n_train_samples": len(X_train),
+            "n_val_samples": len(X_val),
             "n_features": X.shape[1],
             "train_r2": train_score,
+            "oos_r2": oos_score,
             "n_iter": model.n_iter_,
         }
 
