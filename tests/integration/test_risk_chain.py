@@ -180,3 +180,82 @@ class TestRiskChainIntegration:
         triggered = ks.check(nav_dropped)
         assert triggered
         assert ks.is_halted
+
+    def test_risk_cascade_coordinator_matches_manual_chain(self):
+        """RiskCascadeCoordinator produces same outcome as manual chain."""
+        from quant_fund.risk_engine.portfolio_kill_switch import KillSwitch
+        from quant_fund.risk_engine.drawdown_monitor import DrawdownMonitor
+        from quant_fund.risk_engine.exposure_monitor import ExposureMonitor
+        from quant_fund.risk_engine.leverage_controller import LeverageController
+        from quant_fund.risk_engine.risk_cascade_coordinator import RiskCascadeCoordinator
+
+        nav = 1_000_000.0
+        rng = np.random.default_rng(SEED)
+        tickers = STANDARD_TICKERS[:10]
+        weights = pd.Series(rng.normal(0, 0.3, len(tickers)), index=tickers)
+
+        # Manual chain
+        lc1 = LeverageController({"max_leverage": 2.0})
+        em1 = ExposureMonitor({"max_leverage": 2.0, "max_sector_exposure": 0.20,
+                                "max_single_name_exposure": 0.10})
+
+        manual_weights = lc1.enforce(weights)
+        manual_breaches = em1.check(manual_weights, sector_map=STANDARD_SECTORS)
+
+        # Coordinator chain (fresh instances with same config)
+        lc2 = LeverageController({"max_leverage": 2.0})
+        em2 = ExposureMonitor({"max_leverage": 2.0, "max_sector_exposure": 0.20,
+                                "max_single_name_exposure": 0.10})
+
+        coord = RiskCascadeCoordinator(
+            leverage_controller=lc2, exposure_monitor=em2,
+        )
+        result = coord.run_cascade(nav, weights, sector_map=STANDARD_SECTORS)
+
+        # Same adjusted weights
+        pd.testing.assert_series_equal(result.adjusted_weights, manual_weights)
+        # Same breach count
+        assert len(result.exposure_breaches) == len(manual_breaches)
+        # Same block decision
+        assert result.orders_blocked == (len(manual_breaches) > 0)
+
+    def test_risk_cascade_in_trading_engine_convergence(self):
+        """RiskCascadeCoordinator wired into TradingEngine blocks on breach."""
+        from quant_fund.broker_interface.simulation_broker import SimulationBroker
+        from quant_fund.execution.order_management.order_generator import OrderGenerator
+        from quant_fund.execution.order_management.order_router import OrderRouter
+        from quant_fund.risk_engine.portfolio_kill_switch import KillSwitch
+        from quant_fund.risk_engine.exposure_monitor import ExposureMonitor
+        from quant_fund.risk_engine.leverage_controller import LeverageController
+        from quant_fund.risk_engine.risk_cascade_coordinator import RiskCascadeCoordinator
+        from quant_fund.main.trading_engine import TradingEngine
+        from tests.conftest import STANDARD_MARKET_DATA
+
+        broker = SimulationBroker(config={"initial_cash": 1_000_000})
+        broker.set_market_data(STANDARD_MARKET_DATA)
+
+        coord = RiskCascadeCoordinator(
+            kill_switch=KillSwitch(config={"drawdown_limit": 0.20}),
+            leverage_controller=LeverageController({"max_leverage": 1.0}),
+            exposure_monitor=ExposureMonitor({"max_single_name_exposure": 0.02}),
+        )
+
+        engine = TradingEngine(config={"synchronous": True})
+        engine.inject_components(
+            broker=broker,
+            order_generator=OrderGenerator(),
+            order_router=OrderRouter(broker),
+            kill_switch=KillSwitch(config={"drawdown_limit": 0.20}),
+            risk_cascade=coord,
+        )
+
+        # 50% in one name — breaches single-name limit
+        weights = pd.Series({"AAPL": 0.50, "MSFT": 0.01})
+        engine.update_target_weights(weights)
+
+        initial_positions = broker.get_positions()
+        engine._convergence_tick()
+        after_positions = broker.get_positions()
+
+        # Orders should have been blocked
+        assert initial_positions.equals(after_positions)

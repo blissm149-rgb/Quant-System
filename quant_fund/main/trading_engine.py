@@ -127,6 +127,17 @@ class TradingEngine:
         self._health_monitor: Optional[SystemHealthMonitor] = None
         self._reconciliation: Optional[ReconciliationEngine] = None
         self._live_data_adapter = None
+        self._risk_cascade = None
+        self._execution_quality_monitor = None
+        self._strategy_allocator = None
+        self._strategy_nav_allocations: Dict[str, float] = {}
+        self._capacity_model = None
+        self._max_impact_bps: float = cfg.get("max_impact_bps", 50.0)
+        self._volatility_estimates: Optional[pd.Series] = None
+
+        # Context data (injected or updated)
+        self._sector_map: Optional[Dict[str, str]] = None
+        self._factor_exposures: Optional[pd.DataFrame] = None
 
         # Runtime state
         self._target_weights: Optional[pd.Series] = None
@@ -155,7 +166,9 @@ class TradingEngine:
         Accepted keys: broker, research_runner, portfolio_optimizer,
         constraint_engine, kill_switch, drawdown_monitor, exposure_monitor,
         leverage_controller, order_generator, order_router, pnl_dashboard,
-        alerting, health_monitor, live_data_adapter.
+        alerting, health_monitor, live_data_adapter, risk_cascade,
+        execution_quality_monitor, strategy_allocator, capacity_model,
+        sector_map, factor_exposures.
         """
         for name, component in components.items():
             attr = f"_{name}"
@@ -386,9 +399,10 @@ class TradingEngine:
 
         1. Get current target weights
         2. Get current positions from broker
-        3. Compute delta
-        4. Generate orders for delta
-        5. Route orders
+        3. Enforce leverage constraints
+        4. Check exposure limits (may block orders)
+        5. Generate orders for delta
+        6. Route orders
         """
         if self._target_weights is None:
             return
@@ -401,6 +415,16 @@ class TradingEngine:
         if nav <= 0:
             return
 
+        # Scale NAV by strategy allocation if allocator is active
+        if (
+            self._strategy_allocator is not None
+            and self._strategy_id in self._strategy_nav_allocations
+        ):
+            alloc_fraction = self._strategy_nav_allocations[self._strategy_id]
+            if alloc_fraction <= 0:
+                return  # zero allocation — no orders
+            nav = nav * alloc_fraction
+
         current_positions = self._broker.get_positions()
         prices = pd.Series(dtype=float)
         tickers = list(self._target_weights.index)
@@ -409,8 +433,127 @@ class TradingEngine:
             if not md.empty and "mid" in md.columns:
                 prices = md["mid"]
 
+        # --- Risk gate ---
+        if self._risk_cascade is not None:
+            # Unified cascade: kill_switch → drawdown → leverage → exposure
+            cascade_result = self._risk_cascade.run_cascade(
+                nav, self._target_weights, self._sector_map,
+                self._factor_exposures,
+            )
+            if cascade_result.orders_blocked:
+                action = "halt" if cascade_result.kill_switch_triggered else "exposure_breach"
+                self._event_bus.publish(
+                    Event(
+                        event_type=EventType.RISK_CHECK,
+                        payload={
+                            "action": action,
+                            "kill_switch": cascade_result.kill_switch_triggered,
+                            "breaches": [
+                                {
+                                    "type": b.exposure_type,
+                                    "current": b.current_value,
+                                    "limit": b.limit,
+                                }
+                                for b in cascade_result.exposure_breaches
+                            ],
+                        },
+                        source="convergence_loop",
+                        priority=EventPriority.HIGH,
+                    )
+                )
+                if cascade_result.kill_switch_triggered:
+                    from quant_fund.infrastructure.system_state_machine import SystemState
+                    self._state_machine.try_transition(
+                        SystemState.RISK_HALT,
+                        reason=f"Kill switch triggered at NAV={nav:.2f}",
+                    )
+                return
+            working_weights = cascade_result.adjusted_weights
+        else:
+            # Fallback: inline risk checks (Module A)
+            working_weights = self._target_weights
+
+            if self._leverage_controller is not None:
+                working_weights = self._leverage_controller.enforce(working_weights)
+
+            if self._exposure_monitor is not None:
+                breaches = self._exposure_monitor.check(
+                    working_weights,
+                    sector_map=self._sector_map,
+                    factor_exposures=self._factor_exposures,
+                )
+                if breaches:
+                    logger.warning(
+                        "Exposure breach in convergence — orders blocked: %s",
+                        [b.message for b in breaches],
+                    )
+                    self._event_bus.publish(
+                        Event(
+                            event_type=EventType.RISK_CHECK,
+                            payload={
+                                "action": "exposure_breach",
+                                "breaches": [
+                                    {
+                                        "type": b.exposure_type,
+                                        "current": b.current_value,
+                                        "limit": b.limit,
+                                    }
+                                    for b in breaches
+                                ],
+                            },
+                            source="convergence_loop",
+                            priority=EventPriority.HIGH,
+                        )
+                    )
+                    return
+
+        # --- Capacity constraint: scale high-impact trades ---
+        if self._capacity_model is not None and not prices.empty:
+            # Compute trade notional per ticker
+            current_weight = pd.Series(dtype=float)
+            if nav > 0 and not current_positions.empty:
+                current_value = current_positions * prices.reindex(
+                    current_positions.index
+                ).fillna(0)
+                current_weight = current_value / nav
+
+            weight_delta = working_weights.subtract(
+                current_weight, fill_value=0.0
+            ).abs()
+            trade_notional = weight_delta * nav
+
+            # Get ADV from market data
+            adv_series = pd.Series(dtype=float)
+            if tickers:
+                md = self._broker.get_market_data(tickers)
+                if not md.empty and "adv" in md.columns:
+                    adv_series = md["adv"]
+
+            vol = self._volatility_estimates
+            if vol is None:
+                vol = pd.Series(0.02, index=trade_notional.index)
+
+            if not adv_series.empty:
+                impact = self._capacity_model.estimate_impact_portfolio(
+                    trade_notional, adv_series, vol,
+                )
+                # Scale down high-impact tickers by 50%
+                for ticker in impact.index:
+                    if impact[ticker] > self._max_impact_bps and ticker in working_weights.index:
+                        midpoint = (
+                            working_weights[ticker]
+                            + current_weight.get(ticker, 0.0)
+                        ) / 2.0
+                        working_weights = working_weights.copy()
+                        working_weights[ticker] = midpoint
+                        logger.info(
+                            "Capacity constraint: %s impact %.1f bps > %.1f, "
+                            "scaling toward current weight",
+                            ticker, impact[ticker], self._max_impact_bps,
+                        )
+
         orders = self._order_generator.generate_orders(
-            target_weights=self._target_weights,
+            target_weights=working_weights,
             current_positions=current_positions,
             prices=prices,
             nav=nav,
@@ -428,7 +571,10 @@ class TradingEngine:
                 "Convergence: %d orders, %d fills", len(orders), fills
             )
 
-            # Publish fill events
+            # Build order lookup for execution quality
+            order_by_id = {o.order_id: o for o in orders}
+
+            # Publish fill events and record execution quality
             for ack in acks:
                 if ack.status in (
                     OrderStatus.FILLED,
@@ -446,10 +592,81 @@ class TradingEngine:
                         )
                     )
 
+                    # Record execution quality
+                    if self._execution_quality_monitor is not None:
+                        order = order_by_id.get(ack.order_id)
+                        if order is not None:
+                            decision_price = prices.get(order.ticker, 0.0)
+                            # Use mid price as proxy for fill price when
+                            # actual fill data isn't directly on the ack
+                            fill_price = decision_price
+                            if self._broker is not None:
+                                recent_fills = getattr(
+                                    self._broker, "_fills", []
+                                )
+                                for f in reversed(recent_fills):
+                                    if f.order_id == ack.order_id:
+                                        fill_price = f.fill_price
+                                        break
+                            self._execution_quality_monitor.record_execution(
+                                order_id=ack.order_id,
+                                ticker=order.ticker,
+                                side=order.side.value,
+                                target_qty=order.quantity,
+                                filled_qty=order.quantity,
+                                decision_price=decision_price,
+                                fill_price=fill_price,
+                            )
+
+    def get_execution_quality_summary(self):
+        """Get aggregate execution quality metrics."""
+        if self._execution_quality_monitor is None:
+            return None
+        return self._execution_quality_monitor.get_summary()
+
     def update_target_weights(self, weights: pd.Series) -> None:
         """Set the target portfolio weights for convergence."""
         self._target_weights = weights
         logger.info("Target weights updated: %d tickers", len(weights))
+
+    def update_sector_map(self, sector_map: Dict[str, str]) -> None:
+        """Set the ticker → sector mapping for exposure monitoring."""
+        self._sector_map = sector_map
+
+    def update_factor_exposures(self, factor_exposures: pd.DataFrame) -> None:
+        """Set the current factor exposures (tickers x factors) for risk checks."""
+        self._factor_exposures = factor_exposures
+
+    def update_volatility_estimates(self, volatility: pd.Series) -> None:
+        """Set per-ticker daily volatility estimates for capacity model."""
+        self._volatility_estimates = volatility
+
+    def update_strategy_allocations(
+        self, strategy_sharpes: Dict[str, float], **kwargs
+    ) -> Dict[str, float]:
+        """Compute and cache strategy allocations via the injected allocator.
+
+        Parameters
+        ----------
+        strategy_sharpes : dict
+            Mapping of strategy_id → trailing Sharpe ratio.
+        **kwargs
+            Passed through to DynamicStrategyAllocator.allocate()
+            (e.g. correlation_penalties, regime_adjustments).
+
+        Returns
+        -------
+        dict
+            Mapping of strategy_id → allocation weight.
+        """
+        if self._strategy_allocator is None:
+            return {}
+        allocations = self._strategy_allocator.allocate(
+            strategy_sharpes, **kwargs
+        )
+        self._strategy_nav_allocations = allocations
+        logger.info("Strategy allocations updated: %s", allocations)
+        return allocations
 
     # ------------------------------------------------------------------
     # Risk checks

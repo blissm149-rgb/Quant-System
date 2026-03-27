@@ -86,6 +86,8 @@ class PaperTradingRunner:
         self._factor_returns = None  # pd.DataFrame (dates x factors)
         self._stock_returns = None  # pd.DataFrame (dates x tickers)
         self._sector_map = None  # Dict[str, str] ticker -> sector
+        self._risk_cascade = None
+        self._execution_quality_monitor = None
 
     def inject_components(self, **components) -> None:
         """Inject pipeline components by name.
@@ -279,26 +281,45 @@ class PaperTradingRunner:
 
             # 6. Risk checks on target weights
             if target_weights is not None:
-                if self._leverage_controller is not None:
-                    target_weights = self._leverage_controller.enforce(
-                        target_weights
+                if self._risk_cascade is not None:
+                    cascade_result = self._risk_cascade.run_cascade(
+                        nav, target_weights, self._sector_map, factor_exposures,
                     )
-
-                if self._exposure_monitor is not None:
-                    breaches = self._exposure_monitor.check(
-                        target_weights,
-                        sector_map=self._sector_map,
-                        factor_exposures=factor_exposures,
-                    )
-                    if breaches:
-                        day.exposure_breaches = [str(b) for b in breaches]
-                        day.status = "exposure_breach"
+                    if cascade_result.orders_blocked:
+                        if cascade_result.kill_switch_triggered:
+                            day.kill_switch_triggered = True
+                            day.status = "kill_switch"
+                        else:
+                            day.exposure_breaches = [
+                                str(b) for b in cascade_result.exposure_breaches
+                            ]
+                            day.status = "exposure_breach"
                         day.nav = nav
-                        logger.warning(
-                            "Exposure breach on %s — orders blocked: %s",
-                            date, day.exposure_breaches,
+                        target_weights = None
+                    else:
+                        target_weights = cascade_result.adjusted_weights
+                else:
+                    # Fallback: inline risk checks
+                    if self._leverage_controller is not None:
+                        target_weights = self._leverage_controller.enforce(
+                            target_weights
                         )
-                        target_weights = None  # block order generation
+
+                    if self._exposure_monitor is not None:
+                        breaches = self._exposure_monitor.check(
+                            target_weights,
+                            sector_map=self._sector_map,
+                            factor_exposures=factor_exposures,
+                        )
+                        if breaches:
+                            day.exposure_breaches = [str(b) for b in breaches]
+                            day.status = "exposure_breach"
+                            day.nav = nav
+                            logger.warning(
+                                "Exposure breach on %s — orders blocked: %s",
+                                date, day.exposure_breaches,
+                            )
+                            target_weights = None  # block order generation
 
             # 7. Generate and execute orders
             if target_weights is not None and self._order_generator is not None:
@@ -326,6 +347,30 @@ class PaperTradingRunner:
                     day.num_fills = sum(
                         1 for a in acks if a.status.value in ("filled", "partial_fill")
                     )
+
+                    # Record execution quality
+                    if self._execution_quality_monitor is not None:
+                        order_by_id = {o.order_id: o for o in orders}
+                        for ack in acks:
+                            if ack.status.value in ("filled", "partial_fill"):
+                                order = order_by_id.get(ack.order_id)
+                                if order is not None:
+                                    decision_price = prices.get(order.ticker, 0.0)
+                                    fill_price = decision_price
+                                    recent_fills = getattr(self._broker, "_fills", [])
+                                    for f in reversed(recent_fills):
+                                        if f.order_id == ack.order_id:
+                                            fill_price = f.fill_price
+                                            break
+                                    self._execution_quality_monitor.record_execution(
+                                        order_id=ack.order_id,
+                                        ticker=order.ticker,
+                                        side=order.side.value,
+                                        target_qty=order.quantity,
+                                        filled_qty=order.quantity,
+                                        decision_price=decision_price,
+                                        fill_price=fill_price,
+                                    )
 
             # 8. Update NAV
             if self._broker is not None:
