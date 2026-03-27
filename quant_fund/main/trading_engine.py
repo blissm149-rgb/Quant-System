@@ -110,6 +110,9 @@ class TradingEngine:
         self._convergence_interval_s: float = cfg.get(
             "convergence_interval_s", 5.0
         )
+        self._research_interval_s: float = cfg.get(
+            "research_interval_s", 3600.0  # default: rebalance hourly
+        )
 
         # Components (injected)
         self._broker: Optional[BrokerInterface] = None
@@ -134,6 +137,11 @@ class TradingEngine:
         self._capacity_model = None
         self._max_impact_bps: float = cfg.get("max_impact_bps", 50.0)
         self._volatility_estimates: Optional[pd.Series] = None
+        self._factor_exposure_estimator = None
+        self._factor_covariance_estimator = None
+        self._market_hours_enforcer = None
+        self._stock_returns: Optional[pd.DataFrame] = None
+        self._factor_returns: Optional[pd.DataFrame] = None
 
         # Context data (injected or updated)
         self._sector_map: Optional[Dict[str, str]] = None
@@ -147,6 +155,7 @@ class TradingEngine:
         self._last_health_check_time: float = 0.0
         self._last_convergence_time: float = 0.0
         self._last_signal_time: float = 0.0
+        self._last_research_time: float = 0.0
         self._strategy_id: str = cfg.get("strategy_id", "default")
 
         # Shutdown coordination
@@ -168,6 +177,8 @@ class TradingEngine:
         leverage_controller, order_generator, order_router, pnl_dashboard,
         alerting, health_monitor, live_data_adapter, risk_cascade,
         execution_quality_monitor, strategy_allocator, capacity_model,
+        factor_exposure_estimator, factor_covariance_estimator,
+        market_hours_enforcer, stock_returns, factor_returns,
         sector_map, factor_exposures.
         """
         for name, component in components.items():
@@ -346,6 +357,25 @@ class TradingEngine:
 
                 # Portfolio convergence (only when trading)
                 if self._state_machine.can_trade:
+                    # Market hours gate
+                    if self._market_hours_enforcer is not None:
+                        can_trade, reason = self._market_hours_enforcer.can_submit_order(
+                            pd.Timestamp.now(tz="America/New_York")
+                        )
+                        if not can_trade:
+                            # Outside market hours — skip convergence
+                            self._event_bus.drain()
+                            time.sleep(self._tick_interval_s)
+                            continue
+
+                    # Periodic research & optimization
+                    if (
+                        now - self._last_research_time
+                        >= self._research_interval_s
+                    ):
+                        self._run_research_and_optimize()
+                        self._last_research_time = now
+
                     if (
                         now - self._last_convergence_time
                         >= self._convergence_interval_s
@@ -623,6 +653,128 @@ class TradingEngine:
         if self._execution_quality_monitor is None:
             return None
         return self._execution_quality_monitor.get_summary()
+
+    # ------------------------------------------------------------------
+    # Research → optimization pipeline
+    # ------------------------------------------------------------------
+
+    def _run_research_and_optimize(self) -> None:
+        """Run the research → factor model → optimization → target weights chain.
+
+        Mirrors PaperTradingRunner steps 3-6:
+        1. Run research cycle to produce alpha scores
+        2. Estimate factor exposures and covariance
+        3. Build constraints
+        4. Optimize portfolio
+        5. Set target weights for convergence loop
+        """
+        if self._research_runner is None:
+            return
+
+        as_of = pd.Timestamp.now(tz="America/New_York")
+
+        # Get market data for research
+        market_data = None
+        if self._live_data_adapter is not None:
+            try:
+                market_data = self._live_data_adapter.get_latest_bar()
+            except Exception:
+                logger.warning("Failed to get latest market data for research")
+
+        # Step 1: Research cycle → alpha scores
+        try:
+            research_result = self._research_runner.run_cycle(
+                as_of=as_of, market_data=market_data,
+            )
+            alpha_scores = research_result.alpha_scores
+        except Exception:
+            logger.exception("Research cycle failed")
+            return
+
+        if alpha_scores is None or alpha_scores.empty:
+            logger.info("Research produced no alpha scores")
+            return
+
+        self._latest_alpha_scores = alpha_scores
+        logger.info("Research produced alpha scores for %d tickers", len(alpha_scores))
+
+        # Publish signal event
+        self._event_bus.publish(
+            Event(
+                event_type=EventType.SIGNAL_GENERATED,
+                payload={
+                    "alpha_scores": alpha_scores.to_dict(),
+                    "as_of": str(as_of),
+                },
+                source="research_runner",
+                priority=EventPriority.NORMAL,
+            )
+        )
+
+        # Step 2: Factor model estimation
+        factor_exposures = self._factor_exposures
+        factor_covariance = None
+
+        if (
+            self._factor_exposure_estimator is not None
+            and self._factor_covariance_estimator is not None
+            and self._stock_returns is not None
+            and self._factor_returns is not None
+        ):
+            try:
+                factor_exposures = self._factor_exposure_estimator.estimate(
+                    returns=self._stock_returns,
+                    factor_returns=self._factor_returns,
+                    as_of=as_of,
+                    sector_map=self._sector_map,
+                )
+                self._factor_exposures = factor_exposures
+
+                factor_covariance = self._factor_covariance_estimator.estimate(
+                    factor_returns=self._factor_returns,
+                    as_of=as_of,
+                )
+            except Exception:
+                logger.exception("Factor model estimation failed")
+
+        # Step 3: Portfolio optimization
+        if self._portfolio_optimizer is not None:
+            try:
+                constraints = None
+                if self._constraint_engine is not None:
+                    constraints = self._constraint_engine.build_constraints(
+                        sector_map=self._sector_map,
+                    )
+
+                current_positions = pd.Series(dtype=float)
+                if self._broker is not None:
+                    current_positions = self._broker.get_positions()
+
+                target_weights = self._portfolio_optimizer.optimize(
+                    alpha_scores=alpha_scores,
+                    factor_covariance=factor_covariance,
+                    factor_exposures=factor_exposures,
+                    constraints=constraints,
+                    current_positions=current_positions,
+                )
+
+                self._target_weights = target_weights
+                logger.info(
+                    "Optimization produced weights for %d tickers (gross=%.3f)",
+                    len(target_weights),
+                    target_weights.abs().sum(),
+                )
+            except Exception:
+                logger.exception("Portfolio optimization failed")
+        else:
+            # No optimizer — use alpha scores as simple weights
+            # Normalize to reasonable gross exposure
+            total = alpha_scores.abs().sum()
+            if total > 0:
+                self._target_weights = alpha_scores / total * 0.5
+                logger.info(
+                    "No optimizer — using normalized alpha scores as weights"
+                )
 
     def update_target_weights(self, weights: pd.Series) -> None:
         """Set the target portfolio weights for convergence."""

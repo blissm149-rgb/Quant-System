@@ -21,11 +21,11 @@ Quantitative Pass/Fail Metrics
 Section 1: Test Architecture
 Testing Pyramid
 Layer	Proportion	Count (Current)	Count (Target)	Execution Time
-Unit Tests	60%	~500	~720	< 2 min
-Integration Tests	25%	~150	~300	< 10 min
-End-to-End Tests	10%	~49	~120	< 30 min
-Stress + Performance	5%	~0	~60	< 60 min
-Total	100%	~699	~1200	
+Unit Tests	60%	~1250	~1400	< 2 min
+Integration Tests	25%	~200	~300	< 10 min
+End-to-End Tests	10%	~100	~120	< 30 min
+Stress + Performance	5%	~4	~60	< 60 min
+Total	100%	~1554	~1880
 Pytest Markers
 @pytest.mark.unit          # Fast, isolated, no I/O
 @pytest.mark.integration   # Multi-module interaction
@@ -84,13 +84,21 @@ tests/
 │   ├── test_approval_workflow.py
 │   ├── test_deployment_controller.py
 │   ├── test_strategy_review_pipeline.py
+│   ├── test_trading_engine.py                    # ✅ TradingEngine lifecycle, injection, convergence (7 tests)
+│   ├── test_trading_engine_convergence.py        # ✅ Risk gates in convergence loop (8 tests)
+│   ├── test_trading_engine_allocation.py         # ✅ Strategy allocation NAV scaling (5 tests)
+│   ├── test_trading_engine_capacity.py           # ✅ Capacity-constrained execution (5 tests)
+│   ├── test_trading_engine_execution_quality.py  # ✅ Execution quality tracking (6 tests)
+│   ├── test_trading_engine_research_pipeline.py  # ✅ Research→optimization pipeline + market hours (14 tests)
+│   ├── test_risk_cascade_coordinator.py          # ✅ Unified risk cascade (8 tests)
 │   ├── ... (one per production module, ~127 files total)
 ├── integration/                       # NEW: module interaction tests
 │   ├── test_data_to_features.py
 │   ├── test_features_to_alpha.py
 │   ├── test_alpha_to_portfolio.py
 │   ├── test_portfolio_to_execution.py
-│   ├── test_risk_chain.py
+│   ├── test_risk_chain.py                        # ✅ includes risk cascade integration (2 tests)
+│   ├── test_recovery_scenarios.py                # ✅ state persistence round-trip + recovery (7 tests)
 │   ├── test_governance_pipeline.py
 │   ├── test_event_driven_loop.py
 │   └── test_broker_reconnection_flow.py

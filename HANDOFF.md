@@ -152,6 +152,7 @@ quant_fund/
 │   ├── exposure_monitor.py             ✅
 │   ├── leverage_controller.py          ✅
 │   ├── portfolio_kill_switch.py        ✅
+│   ├── risk_cascade_coordinator.py     ✅ unified risk cascade: kill_switch → drawdown → leverage → exposure
 │   └── stress_test_engine.py           ✅
 │
 ├── execution/
@@ -161,7 +162,8 @@ quant_fund/
 │   │   └── liquidity_seeking_execution.py ✅
 │   ├── order_management/
 │   │   ├── order_generator.py          ✅
-│   │   └── order_router.py             ✅
+│   │   ├── order_router.py             ✅
+│   │   └── market_hours_enforcer.py    ✅ market hours gate for order submission
 │   ├── reconciliation_engine.py        ✅ continuous position/NAV/order reconciliation
 │   └── microstructure_models/
 │       ├── bid_ask_spread_model.py     ✅
@@ -212,6 +214,8 @@ quant_fund/
     ├── paper_trading_runner.py         ✅
     ├── live_trading_runner.py          ✅
     └── trading_engine.py              ✅ always-on event-driven main loop
+
+main_run.py                             ✅ click-to-run paper trading with live prices + dashboard
 ```
 
 -----
@@ -291,6 +295,13 @@ Group L — Always-on architecture (DONE ✅)
   execution/reconciliation_engine.py         Continuous position/NAV/order reconciliation vs broker
   broker_interface/broker_reconnection_manager.py Auto-reconnect with exponential backoff + failover
   main/trading_engine.py                     Always-on event loop: convergence, snapshots, recovery
+
+Group M — Pipeline integration & production readiness (DONE ✅)
+  risk_engine/risk_cascade_coordinator.py    Unified risk cascade: kill→drawdown→leverage→exposure
+  main/trading_engine.py                     Risk gates in _convergence_tick(), research→optimization pipeline,
+                                             strategy allocation NAV scaling, capacity constraints,
+                                             execution quality tracking, market hours gate
+  main_run.py                                Click-to-run paper trading: YFinance→SimulationBroker→dashboard
 ```
 
 -----
@@ -389,6 +400,12 @@ Group L — Always-on architecture (DONE ✅)
 |State persistence     |All runtime state (kill switch, positions, signals) persisted via StateStore   |
 |Reconciliation        |Broker is source of truth. Positions reconciled every 5min, auto-corrected     |
 |Broker resilience     |BrokerReconnectionManager with exponential backoff + failover to secondary     |
+|Risk cascade          |RiskCascadeCoordinator: kill_switch → drawdown → leverage → exposure in order  |
+|Capacity constraints  |MarketImpactModel gates order size; convergence loop acts as natural slicer    |
+|Execution quality     |ExecutionQualityMonitor tracks IS, fill rate, VWAP slippage, adverse selection |
+|Strategy allocation   |DynamicStrategyAllocator scales NAV per strategy (not weights) for sizing      |
+|Market hours gate     |MarketHoursEnforcer prevents order submission outside market hours             |
+|Paper trading entry   |main_run.py: single-script launch with YFinance data, SimulationBroker, dashboard|
 
 -----
 
@@ -424,15 +441,29 @@ RESEARCH / DAILY CYCLE:
                                      │
                                      ▼
                           risk_engine (kill switch checked here)
+                          risk_cascade_coordinator (unified gate)
+                          capacity_model (market impact filter)
                                      │
                                      ▼
                           order_generator → order_router
                           → broker_abstraction_layer
                           → simulation_broker / IB / Alpaca
+                                     │
+                                     ▼
+                          execution_quality_monitor (IS, fill rate, slippage)
+                          pnl_dashboard (NAV, returns, drawdown)
 
-LIVE CYCLE (same pipeline, live_data_stream_adapter replaces historical_data_loader):
+LIVE CYCLE (TradingEngine — always-on event loop):
 
-  live_data_stream_adapter → [same pipeline as above] → live broker adapter
+  live_data_stream_adapter → TradingEngine._main_loop():
+    market_hours_enforcer gate → _run_research_and_optimize() →
+    _convergence_tick() → risk_cascade → capacity filter →
+    order_generator → order_router → broker → execution_quality_monitor
+
+PAPER TRADING (main_run.py):
+
+  YFinanceFeedProvider → LiveDataStreamAdapter → SimulationBroker.set_market_data()
+  → TradingEngine.run() → console dashboard (NAV, positions, execution quality)
 ```
 
 -----
@@ -529,7 +560,8 @@ class KillSwitch:
 |G (risk)           |Kill switch triggers at exactly 20% drawdown. Exposure monitor catches a simulated breach.                                                                                    |
 |H (execution)      |Simulation broker fills orders with realistic slippage model. VWAP algo spreads a large order correctly across the day.                                                       |
 |L (always-on arch) |EventBus pub/sub + idempotency. State machine transitions + readiness checks. State persistence save/restore. Reconciliation detects discrepancies. TradingEngine lifecycle + convergence. Broker reconnection + failover. 30-day stability simulation. |
-|Full pipeline      |Run `paper_trading_runner.py` for 30 simulated trading days. Assert PnL attribution sums to total return. Assert no look-ahead flags raised.                                  |
+|M (pipeline integration)|TradingEngine risk gates (leverage+exposure in convergence), strategy allocation NAV scaling, capacity-constrained execution, risk cascade coordinator, execution quality tracking, research→optimization pipeline, market hours gate. 53 tests. |
+|Full pipeline      |Run `paper_trading_runner.py` for 30 simulated trading days. Assert PnL attribution sums to total return. Assert no look-ahead flags raised. Or run `main_run.py` for live paper trading with YFinance data. |
 
 -----
 
