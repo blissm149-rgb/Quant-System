@@ -118,8 +118,22 @@ class StateStore:
         self._conn.commit()
         return cursor.rowcount
 
+    def checkpoint(self) -> None:
+        """Force a WAL checkpoint to keep the WAL file from growing unbounded.
+
+        Should be called periodically (e.g. every hour) during long-running
+        sessions to prevent the WAL file from growing to many times the
+        size of the main database.
+        """
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            logger.debug("WAL checkpoint completed")
+        except Exception:
+            logger.warning("WAL checkpoint failed", exc_info=True)
+
     def close(self) -> None:
         """Close the database connection."""
+        self.checkpoint()
         self._conn.close()
         logger.debug("StateStore connection closed")
 

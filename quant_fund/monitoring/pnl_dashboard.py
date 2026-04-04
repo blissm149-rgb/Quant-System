@@ -5,6 +5,7 @@ and sector, realised vs unrealised P&L, and drawdown from peak.
 """
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -44,7 +45,7 @@ class PnLDashboard:
     def __init__(self, config: Optional[dict] = None):
         cfg = config or {}
         self._initial_nav = cfg.get("initial_nav", 1_000_000.0)
-        self._history: List[PnLSnapshot] = []
+        self._history: deque = deque(maxlen=50_000)
         self._peak_nav = self._initial_nav
         self._prev_nav = self._initial_nav
         self._cumulative_realised = 0.0

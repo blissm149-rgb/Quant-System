@@ -7,6 +7,7 @@ latency, slippage, and market impact modelling.
 
 import logging
 import uuid
+from collections import deque
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -49,7 +50,7 @@ class SimulationBroker(BrokerInterface):
 
         self._positions: Dict[str, int] = {}
         self._orders: Dict[str, Order] = {}
-        self._fills: List[Fill] = []
+        self._fills: deque = deque(maxlen=50_000)
         self._market_data: Dict[str, dict] = {}
         self._order_counter = 0
 

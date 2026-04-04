@@ -18,6 +18,7 @@ To stop: Ctrl+C (graceful shutdown with state snapshot).
 
 import argparse
 import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -33,6 +34,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from quant_fund.alpha_discovery.signal_ranking_engine import SignalRankingEngine
 from quant_fund.broker_interface.simulation_broker import SimulationBroker
 from quant_fund.data_layer.connectors.yfinance_connector import YFinanceConnector
 from quant_fund.data_layer.live_data_stream_adapter import (
@@ -49,7 +51,18 @@ from quant_fund.monitoring.alerting_system import AlertingSystem
 from quant_fund.monitoring.execution_quality_monitor import ExecutionQualityMonitor
 from quant_fund.monitoring.pnl_dashboard import PnLDashboard
 from quant_fund.monitoring.system_health_monitor import SystemHealthMonitor
+from quant_fund.feature_factory.feature_normalizer import FeatureNormalizer
+from quant_fund.feature_factory.technical_indicator_engine import (
+    TechnicalIndicatorEngine,
+)
+from quant_fund.main.research_runner import ResearchRunner
 from quant_fund.portfolio.capacity_model.market_impact_model import MarketImpactModel
+from quant_fund.portfolio.portfolio_construction.constraint_engine import (
+    ConstraintEngine,
+)
+from quant_fund.portfolio.portfolio_construction.portfolio_optimizer import (
+    PortfolioOptimizer,
+)
 from quant_fund.risk_engine.drawdown_monitor import DrawdownMonitor
 from quant_fund.risk_engine.leverage_controller import LeverageController
 from quant_fund.risk_engine.portfolio_kill_switch import KillSwitch
@@ -83,6 +96,9 @@ class YFinanceFeedProvider(FeedProvider):
     def __init__(self, config: Optional[dict] = None):
         self._connector = YFinanceConnector(config=config)
         self._connected = False
+        self._consecutive_failures = 0
+        self._failure_warning_threshold = 3
+        self._failure_critical_threshold = 10
 
     def connect(self) -> None:
         self._connected = True
@@ -98,9 +114,37 @@ class YFinanceFeedProvider(FeedProvider):
             return pd.DataFrame()
         try:
             df = self._connector.fetch_latest(tickers)
+            if df.empty:
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self._failure_critical_threshold:
+                    logger.critical(
+                        "YFinance returned empty data %d consecutive times — "
+                        "possible rate limit or outage",
+                        self._consecutive_failures,
+                    )
+                elif self._consecutive_failures >= self._failure_warning_threshold:
+                    logger.warning(
+                        "YFinance returned empty data %d consecutive times",
+                        self._consecutive_failures,
+                    )
+            else:
+                if self._consecutive_failures > 0:
+                    logger.info(
+                        "YFinance recovered after %d empty responses",
+                        self._consecutive_failures,
+                    )
+                self._consecutive_failures = 0
             return df
         except Exception:
-            logger.warning("YFinance fetch_latest_bars failed", exc_info=True)
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._failure_critical_threshold:
+                logger.critical(
+                    "YFinance fetch failed %d consecutive times — "
+                    "possible rate limit or network outage",
+                    self._consecutive_failures,
+                )
+            else:
+                logger.warning("YFinance fetch_latest_bars failed", exc_info=True)
             return pd.DataFrame()
 
     def fetch_snapshot(
@@ -287,6 +331,40 @@ def build_engine(
     # Market hours
     market_hours = MarketHoursEnforcer()
 
+    # Research pipeline — generates real alpha-driven weights
+    tech_engine = TechnicalIndicatorEngine(config={
+        "technical_indicators": {
+            "return_windows": [5, 20, 60],
+            "volatility_windows": [20],
+            "rsi_window": 14,
+            "bollinger_window": 20,
+            "relative_volume_window": 20,
+        }
+    })
+    research_runner = ResearchRunner(config={
+        "universe": tickers,
+        "lookback_days": 252,
+    })
+    research_runner.inject_components(
+        feature_generators=tech_engine.generators,
+        feature_normalizer=FeatureNormalizer(),
+        signal_ranking=SignalRankingEngine(config={
+            "min_ic": 0.0,       # relax IC filter for live trading
+            "min_ic_tstat": 0.0,  # relax t-stat filter
+            "min_eval_days": 0,   # no minimum eval period
+        }),
+    )
+
+    # Portfolio optimizer and constraints
+    portfolio_optimizer = PortfolioOptimizer(config={"risk_aversion": 1.0})
+    constraint_engine = ConstraintEngine(config={
+        "position_limits": {
+            "max_position_size": 0.10,     # 10% max per stock (paper trading)
+            "max_sector_exposure": 0.40,   # 40% per sector (relaxed for 10 tickers)
+            "max_leverage": 1.0,           # long-only for paper trading
+        }
+    })
+
     # Engine
     engine = TradingEngine(config={
         "tick_interval_s": 1.0,
@@ -315,6 +393,9 @@ def build_engine(
         capacity_model=capacity_model,
         market_hours_enforcer=market_hours,
         sector_map=DEFAULT_SECTORS,
+        research_runner=research_runner,
+        portfolio_optimizer=portfolio_optimizer,
+        constraint_engine=constraint_engine,
     )
 
     # Subscribe to tickers
@@ -329,6 +410,8 @@ def build_engine(
             dashboard.update(nav)
             health.record_data_timestamp("yfinance", pd.Timestamp.now())
             logger.debug("Market data updated: %d tickers", len(md))
+        else:
+            logger.warning("Received empty market data — prices may be stale")
 
     live_adapter.on_bar(on_new_bars)
 
@@ -359,10 +442,10 @@ def run_paper_trading(
         engine._market_hours_enforcer = None
         logger.info("Market hours enforcement DISABLED (--skip-market-hours)")
 
-    # Seed initial market data before engine starts
+    # Seed initial market data and historical data for research
     logger.info("Fetching initial market data for %d tickers...", len(tickers))
+    connector = YFinanceConnector()
     try:
-        connector = YFinanceConnector()
         bars = connector.fetch_latest(tickers)
         md = bars_to_market_data(bars)
         if md:
@@ -380,29 +463,59 @@ def run_paper_trading(
     except Exception:
         logger.warning("Initial market data fetch failed", exc_info=True)
 
-    # If no research runner is injected, seed some simple equal-weight targets
-    # so convergence has something to trade toward
-    if engine._research_runner is None and engine._target_weights is None:
+    # Fetch 1 year of historical OHLCV for feature computation
+    logger.info("Fetching 1 year of historical data for research pipeline...")
+    try:
+        end_date = pd.Timestamp.now()
+        start_date = end_date - pd.Timedelta(days=365)
+        historical = connector.fetch_historical(
+            tickers=tickers,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if not historical.empty:
+            engine.inject_components(historical_data=historical)
+            logger.info(
+                "Historical data loaded: %d rows for research features",
+                len(historical),
+            )
+        else:
+            logger.warning("Historical data fetch returned empty — research will use fallback weights")
+    except Exception:
+        logger.warning("Historical data fetch failed — research will use fallback weights", exc_info=True)
+
+    # Seed equal-weight targets as a starting point. The research pipeline
+    # will overwrite these with alpha-driven weights on the first cycle.
+    if engine._target_weights is None:
         n = len(tickers)
         if n > 0:
             equal_weight = 0.8 / n  # 80% invested, 20% cash buffer
             weights = pd.Series({t: equal_weight for t in tickers})
             engine.update_target_weights(weights)
             logger.info(
-                "No research runner — seeded equal-weight targets "
-                "(%.2f%% per ticker, %d tickers)",
-                equal_weight * 100, n,
+                "Seeded equal-weight targets (%.2f%% per ticker). "
+                "Research pipeline will update on first cycle.",
+                equal_weight * 100,
             )
 
-    # Run the engine in a background thread so we can print the dashboard
+    # Install signal handlers in the main thread (they fail from background threads)
     import threading
 
+    def _shutdown_handler(signum, frame):
+        sig_name = signal.Signals(signum).name
+        logger.info("Received %s — requesting graceful shutdown", sig_name)
+        engine.request_shutdown()
+
+    signal.signal(signal.SIGINT, _shutdown_handler)
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+
+    # Run the engine in a background thread so we can print the dashboard
     tick_count = [0]
     engine_thread = threading.Thread(target=engine.run, daemon=True)
     engine_thread.start()
     logger.info("TradingEngine started in background thread")
 
-    # Dashboard loop
+    # Dashboard loop — signal handler above triggers engine.request_shutdown()
     try:
         while engine_thread.is_alive():
             tick_count[0] += 1
@@ -474,12 +587,25 @@ def main():
 
     args = parser.parse_args()
 
-    # Configure logging
+    # Configure logging — console + rotating file
+    log_level = getattr(logging, args.log_level)
+    log_fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    log_datefmt = "%Y-%m-%d %H:%M:%S"
+
     logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+        level=log_level,
+        format=log_fmt,
+        datefmt=log_datefmt,
     )
+
+    # Add rotating file handler (100 MB per file, keep 10 = ~1 GB total)
+    log_file = os.path.splitext(args.db_path)[0] + ".log"
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=100 * 1024 * 1024, backupCount=10,
+    )
+    file_handler.setFormatter(logging.Formatter(log_fmt, datefmt=log_datefmt))
+    file_handler.setLevel(log_level)
+    logging.getLogger().addHandler(file_handler)
 
     print("=" * 72)
     print("  QUANTFUND V8 — PAPER TRADING")

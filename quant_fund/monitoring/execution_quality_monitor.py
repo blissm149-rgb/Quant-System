@@ -5,6 +5,7 @@ and adverse selection flags for post-trade analysis.
 """
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -57,7 +58,7 @@ class ExecutionQualityMonitor:
     def __init__(self, config: Optional[dict] = None):
         cfg = config or {}
         self._adverse_threshold_bps = cfg.get("adverse_threshold_bps", 20.0)
-        self._records: List[ExecutionRecord] = []
+        self._records: deque = deque(maxlen=10_000)
 
     def record_execution(
         self,

@@ -136,7 +136,7 @@ class StatePersistenceManager:
 
         # Save last N snapshots as serializable dicts
         history_dicts = []
-        for snap in pnl_dashboard._history[-100:]:
+        for snap in list(pnl_dashboard._history)[-100:]:
             history_dicts.append({
                 "timestamp": str(snap.timestamp),
                 "nav": snap.nav,

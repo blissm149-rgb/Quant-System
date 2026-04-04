@@ -6,6 +6,7 @@ and latency metrics. Raises alerts on anomalies.
 
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -51,7 +52,7 @@ class SystemHealthMonitor:
         self._max_data_lag_s = cfg.get("max_data_lag_s", 300)
         self._start_time = time.monotonic()
         self._last_data_timestamps: Dict[str, pd.Timestamp] = {}
-        self._health_history: List[SystemHealthSnapshot] = []
+        self._health_history: deque = deque(maxlen=10_000)
 
     def record_data_timestamp(
         self, feed_name: str, timestamp: pd.Timestamp

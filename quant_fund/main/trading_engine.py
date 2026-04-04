@@ -142,6 +142,7 @@ class TradingEngine:
         self._market_hours_enforcer = None
         self._stock_returns: Optional[pd.DataFrame] = None
         self._factor_returns: Optional[pd.DataFrame] = None
+        self._historical_data: Optional[pd.DataFrame] = None
 
         # Context data (injected or updated)
         self._sector_map: Optional[Dict[str, str]] = None
@@ -161,6 +162,10 @@ class TradingEngine:
         # Shutdown coordination
         self._shutdown_requested = False
         self._lock = threading.Lock()
+
+        # Data lock protects shared mutable state accessed from multiple
+        # threads (e.g. signal handler thread, dashboard thread, main loop).
+        self._data_lock = threading.RLock()
 
         # Register event handlers
         self._register_event_handlers()
@@ -241,7 +246,8 @@ class TradingEngine:
             return
         scores_dict = event.payload.get("alpha_scores", {})
         if scores_dict:
-            self._latest_alpha_scores = pd.Series(scores_dict, dtype=float)
+            with self._data_lock:
+                self._latest_alpha_scores = pd.Series(scores_dict, dtype=float)
             logger.info("Received alpha scores for %d tickers", len(scores_dict))
 
     def _on_order_fill(self, event: Event) -> None:
@@ -329,6 +335,8 @@ class TradingEngine:
     def _main_loop(self) -> None:
         """The core always-on loop."""
         logger.info("Phase 2: Main loop started")
+        consecutive_errors = 0
+        max_consecutive_errors = 50
 
         while not self._shutdown_requested:
             now = time.monotonic()
@@ -389,8 +397,33 @@ class TradingEngine:
                 # Process queued events
                 self._event_bus.drain()
 
+                # Reset error counter on successful tick
+                consecutive_errors = 0
+
             except Exception:
-                logger.exception("Error in main loop tick")
+                consecutive_errors += 1
+                logger.exception(
+                    "Error in main loop tick (%d/%d consecutive)",
+                    consecutive_errors, max_consecutive_errors,
+                )
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.critical(
+                        "Error budget exhausted (%d consecutive errors) "
+                        "— transitioning to RISK_HALT",
+                        consecutive_errors,
+                    )
+                    self._state_machine.try_transition(
+                        SystemState.RISK_HALT,
+                        reason=f"Error budget exhausted: {consecutive_errors} consecutive errors",
+                    )
+                    if self._alerting is not None:
+                        self._alerting.send(
+                            AlertLevel.CRITICAL,
+                            "error_budget",
+                            f"Main loop error budget exhausted after {consecutive_errors} consecutive errors",
+                        )
+                    # Reset counter to allow recovery if system resumes
+                    consecutive_errors = 0
 
             time.sleep(self._tick_interval_s)
 
@@ -434,7 +467,9 @@ class TradingEngine:
         5. Generate orders for delta
         6. Route orders
         """
-        if self._target_weights is None:
+        with self._data_lock:
+            target_weights = self._target_weights
+        if target_weights is None:
             return
         if self._broker is None or self._order_generator is None:
             return
@@ -457,7 +492,7 @@ class TradingEngine:
 
         current_positions = self._broker.get_positions()
         prices = pd.Series(dtype=float)
-        tickers = list(self._target_weights.index)
+        tickers = list(target_weights.index)
         if tickers:
             md = self._broker.get_market_data(tickers)
             if not md.empty and "mid" in md.columns:
@@ -467,7 +502,7 @@ class TradingEngine:
         if self._risk_cascade is not None:
             # Unified cascade: kill_switch → drawdown → leverage → exposure
             cascade_result = self._risk_cascade.run_cascade(
-                nav, self._target_weights, self._sector_map,
+                nav, target_weights, self._sector_map,
                 self._factor_exposures,
             )
             if cascade_result.orders_blocked:
@@ -501,7 +536,7 @@ class TradingEngine:
             working_weights = cascade_result.adjusted_weights
         else:
             # Fallback: inline risk checks (Module A)
-            working_weights = self._target_weights
+            working_weights = target_weights
 
             if self._leverage_controller is not None:
                 working_weights = self._leverage_controller.enforce(working_weights)
@@ -673,9 +708,10 @@ class TradingEngine:
 
         as_of = pd.Timestamp.now(tz="America/New_York")
 
-        # Get market data for research
-        market_data = None
-        if self._live_data_adapter is not None:
+        # Get market data for research — prefer historical cache (needed for
+        # feature computation lookbacks) over single latest bar
+        market_data = self._historical_data
+        if market_data is None and self._live_data_adapter is not None:
             try:
                 market_data = self._live_data_adapter.get_latest_bar()
             except Exception:
@@ -758,7 +794,8 @@ class TradingEngine:
                     current_positions=current_positions,
                 )
 
-                self._target_weights = target_weights
+                with self._data_lock:
+                    self._target_weights = target_weights
                 logger.info(
                     "Optimization produced weights for %d tickers (gross=%.3f)",
                     len(target_weights),
@@ -771,14 +808,16 @@ class TradingEngine:
             # Normalize to reasonable gross exposure
             total = alpha_scores.abs().sum()
             if total > 0:
-                self._target_weights = alpha_scores / total * 0.5
+                with self._data_lock:
+                    self._target_weights = alpha_scores / total * 0.5
                 logger.info(
                     "No optimizer — using normalized alpha scores as weights"
                 )
 
     def update_target_weights(self, weights: pd.Series) -> None:
         """Set the target portfolio weights for convergence."""
-        self._target_weights = weights
+        with self._data_lock:
+            self._target_weights = weights
         logger.info("Target weights updated: %d tickers", len(weights))
 
     def update_sector_map(self, sector_map: Dict[str, str]) -> None:
@@ -1010,6 +1049,9 @@ class TradingEngine:
             alpha_scores=self._latest_alpha_scores,
             open_order_ids=open_ids,
         )
+
+        # Periodic WAL checkpoint to prevent unbounded WAL file growth
+        self._state_store.checkpoint()
 
     def _restore_state(self) -> None:
         """Restore state from the most recent snapshot."""

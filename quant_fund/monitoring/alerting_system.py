@@ -6,6 +6,7 @@ Supports email, Slack webhook, and PagerDuty delivery (configurable).
 """
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Dict, List, Optional
@@ -49,7 +50,7 @@ class AlertingSystem:
             AlertLevel.WARNING: [],
             AlertLevel.CRITICAL: [],
         }
-        self._history: List[Alert] = []
+        self._history: deque = deque(maxlen=5_000)
         self._alert_counter = 0
         self._suppress_duplicates_seconds = cfg.get(
             "suppress_duplicates_seconds", 300
