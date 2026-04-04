@@ -142,7 +142,7 @@ class TestLargeUniverse:
 
         tickers = [f"T{i:04d}" for i in range(100)]
         ohlcv = make_ohlcv(tickers=tickers, periods=252, seed=SEED)
-        as_of = ohlcv.index.get_level_values("date").max()
+        as_of = ohlcv.index.get_level_values("date").max() + pd.Timedelta(days=1)
 
         engine = TechnicalIndicatorEngine()
         result = engine.compute_all(ohlcv, as_of)

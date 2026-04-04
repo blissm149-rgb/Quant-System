@@ -40,7 +40,7 @@ class TestFeatureComputationPerformance:
         from quant_fund.feature_factory.technical_indicator_engine import TechnicalIndicatorEngine
 
         ohlcv = make_ohlcv(tickers=STANDARD_TICKERS[:10], periods=252, seed=SEED)
-        as_of = ohlcv.index.get_level_values("date").max()
+        as_of = ohlcv.index.get_level_values("date").max() + pd.Timedelta(days=1)
         engine = TechnicalIndicatorEngine()
 
         result, elapsed = _time_fn(engine.compute_all, ohlcv, as_of)
@@ -54,7 +54,7 @@ class TestFeatureComputationPerformance:
         from quant_fund.feature_factory.technical_indicator_engine import TechnicalIndicatorEngine
 
         ohlcv = make_ohlcv(tickers=STANDARD_TICKERS[:5], periods=500, seed=SEED)
-        as_of = ohlcv.index.get_level_values("date").max()
+        as_of = ohlcv.index.get_level_values("date").max() + pd.Timedelta(days=1)
         engine = TechnicalIndicatorEngine()
 
         result, elapsed = _time_fn(engine.compute_all, ohlcv, as_of)
@@ -229,7 +229,7 @@ class TestResearchCyclePerformance:
         from quant_fund.feature_factory.feature_normalizer import FeatureNormalizer
 
         ohlcv = make_ohlcv(tickers=STANDARD_TICKERS[:5], periods=300, seed=SEED)
-        as_of = ohlcv.index.get_level_values("date").max()
+        as_of = ohlcv.index.get_level_values("date").max() + pd.Timedelta(days=1)
 
         runner = ResearchRunner({"universe": STANDARD_TICKERS[:5], "lookback_days": 252})
         runner.inject_components(

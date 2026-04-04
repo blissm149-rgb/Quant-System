@@ -82,7 +82,7 @@ class TestDataFormatInvariants:
         from quant_fund.feature_factory.technical_indicator_engine import TechnicalIndicatorEngine
 
         ohlcv = make_ohlcv(tickers=STANDARD_TICKERS[:5], periods=300, seed=42)
-        as_of = ohlcv.index.get_level_values("date").max()
+        as_of = ohlcv.index.get_level_values("date").max() + pd.Timedelta(days=1)
 
         engine = TechnicalIndicatorEngine()
         features = engine.compute_all(ohlcv, as_of)

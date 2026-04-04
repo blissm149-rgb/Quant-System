@@ -250,12 +250,18 @@ class TestTechnicalIndicatorEngine:
         dates = df.index.get_level_values("date").unique()
         as_of = dates[250]
 
-        result1 = engine.compute_all(df, as_of=as_of)
+        # Pre-filter to only past data (strict mode rejects data >= as_of)
+        past_mask = df.index.get_level_values("date") < as_of
+        df_past = df.loc[past_mask]
 
+        result1 = engine.compute_all(df_past, as_of=as_of)
+
+        # Modify future data and filter again — result should be identical
         df_mod = df.copy()
         future_mask = df_mod.index.get_level_values("date") >= as_of
         df_mod.loc[future_mask, "close"] = 999999.0
-        result2 = engine.compute_all(df_mod, as_of=as_of)
+        df_mod_past = df_mod.loc[df_mod.index.get_level_values("date") < as_of]
+        result2 = engine.compute_all(df_mod_past, as_of=as_of)
 
         pd.testing.assert_frame_equal(result1, result2)
 

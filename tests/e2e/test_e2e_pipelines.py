@@ -68,11 +68,11 @@ class TestFullResearchCycle:
 
         tickers = STANDARD_TICKERS[:10]
         ohlcv = make_ohlcv(tickers=tickers, periods=300, seed=SEED)
-        as_of = ohlcv.index.get_level_values("date").max()
+        as_of = ohlcv.index.get_level_values("date").max() + pd.Timedelta(days=1)
 
         # Validate
         validator = DataValidator()
-        val_result = validator.validate(ohlcv, as_of=as_of + pd.Timedelta(days=1))
+        val_result = validator.validate(ohlcv, as_of=as_of)
         assert val_result.is_valid
 
         # Features
@@ -102,7 +102,7 @@ class TestFullResearchCycle:
         """ResearchRunner.run_cycle() produces complete result."""
         tickers = STANDARD_TICKERS[:5]
         ohlcv = make_ohlcv(tickers=tickers, periods=300, seed=SEED)
-        as_of = ohlcv.index.get_level_values("date").max()
+        as_of = ohlcv.index.get_level_values("date").max() + pd.Timedelta(days=1)
 
         runner = _build_research_runner(tickers)
         result = runner.run_cycle(as_of=as_of, market_data=ohlcv)

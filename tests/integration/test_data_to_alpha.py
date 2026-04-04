@@ -33,7 +33,7 @@ class TestDataToFeaturesChain:
 
         # Step 2: Compute features
         engine = TechnicalIndicatorEngine()
-        features = engine.compute_all(ohlcv, as_of=ohlcv.index.get_level_values("date").max())
+        features = engine.compute_all(ohlcv, as_of=as_of)
 
         assert features is not None
         assert len(features) == len(tickers)
@@ -63,7 +63,7 @@ class TestDataToFeaturesChain:
         ])
 
         adjusted = adjuster.adjust_dataframe(ohlcv)
-        as_of = dates[-1]
+        as_of = dates[-1] + pd.Timedelta(days=1)
 
         # Features from adjusted data should differ from raw
         engine = TechnicalIndicatorEngine()
@@ -95,7 +95,7 @@ class TestDataToFeaturesChain:
 
         # Features should compute on aligned data
         engine = TechnicalIndicatorEngine()
-        features = engine.compute_all(aligned, as_of=mid_date)
+        features = engine.compute_all(aligned, as_of=as_of)
         assert features is not None
 
 
@@ -110,7 +110,7 @@ class TestFeaturesToAlpha:
         from quant_fund.feature_factory.feature_normalizer import FeatureNormalizer
 
         ohlcv = make_ohlcv(tickers=STANDARD_TICKERS[:10], periods=300, seed=42)
-        as_of = ohlcv.index.get_level_values("date").max()
+        as_of = ohlcv.index.get_level_values("date").max() + pd.Timedelta(days=1)
 
         engine = TechnicalIndicatorEngine()
         features = engine.compute_all(ohlcv, as_of)
@@ -159,11 +159,11 @@ class TestFeaturesToAlpha:
 
         tickers = STANDARD_TICKERS[:10]
         ohlcv = make_ohlcv(tickers=tickers, periods=300, seed=42)
-        as_of = ohlcv.index.get_level_values("date").max()
+        as_of = ohlcv.index.get_level_values("date").max() + pd.Timedelta(days=1)
 
         # Validate
         validator = DataValidator()
-        val_result = validator.validate(ohlcv, as_of=as_of + pd.Timedelta(days=1))
+        val_result = validator.validate(ohlcv, as_of=as_of)
         assert val_result.is_valid
 
         # Compute features
