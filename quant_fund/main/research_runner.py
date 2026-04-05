@@ -71,7 +71,10 @@ class ResearchRunner:
         self._signal_ranking = None
         self._alpha_monitor = None
         self._ic_monitor = None
+        self._signal_decay_detector = None
+        self._strategy_retirement_manager = None
         self._feature_selector = None
+        self._model_store = None
         self._ml_models = []
         self._retrain_frequency = cfg.get("retrain_frequency", 21)
         self._cycles_since_retrain = 0
@@ -88,7 +91,10 @@ class ResearchRunner:
         signal_ranking=None,
         alpha_monitor=None,
         ic_monitor=None,
+        signal_decay_detector=None,
+        strategy_retirement_manager=None,
         feature_selector=None,
+        model_store=None,
     ) -> None:
         """Inject pipeline components.
 
@@ -108,8 +114,14 @@ class ResearchRunner:
             self._alpha_monitor = alpha_monitor
         if ic_monitor is not None:
             self._ic_monitor = ic_monitor
+        if signal_decay_detector is not None:
+            self._signal_decay_detector = signal_decay_detector
+        if strategy_retirement_manager is not None:
+            self._strategy_retirement_manager = strategy_retirement_manager
         if feature_selector is not None:
             self._feature_selector = feature_selector
+        if model_store is not None:
+            self._model_store = model_store
 
     def inject_ml_models(self, models: list) -> None:
         """Inject ML models that support train_model() for periodic retraining."""
@@ -205,16 +217,52 @@ class ResearchRunner:
             else:
                 logger.info("No features computed for %s", as_of)
 
-            # Step 5b: Retrain ML models periodically
-            if self._ml_models and features:
-                self._cycles_since_retrain += 1
-                if self._cycles_since_retrain >= self._retrain_frequency:
-                    self._retrain_models(feature_matrix, data)
-                    self._cycles_since_retrain = 0
-
-            # Step 6: Update monitoring
+            # Step 5b: Update monitoring
             if self._alpha_monitor is not None and result.alpha_scores is not None:
                 self._alpha_monitor.update(result.alpha_scores)
+
+            # Step 5c: IC monitoring and signal decay detection
+            if result.alpha_scores is not None and data is not None:
+                fwd_ret = self._get_selection_target(data, feature_matrix) if features else None
+                if fwd_ret is not None:
+                    # Track IC
+                    if self._ic_monitor is not None:
+                        alerts = self._ic_monitor.update(
+                            signal_name="composite_alpha",
+                            signal_values=result.alpha_scores,
+                            forward_returns=fwd_ret,
+                            date=as_of,
+                        )
+                        for a in alerts:
+                            logger.warning("IC degradation alert: %s", a.message)
+
+                    # Track signal decay
+                    if self._signal_decay_detector is not None and self._ic_monitor is not None:
+                        ic_hist = getattr(self._ic_monitor, "_ic_history", {})
+                        ic_vals = ic_hist.get("composite_alpha", [])
+                        if ic_vals:
+                            self._signal_decay_detector.update(
+                                "composite_alpha", ic_vals[-1], as_of,
+                            )
+                            decay = self._signal_decay_detector.detect("composite_alpha")
+                            if decay is not None:
+                                result.signal_metrics = result.signal_metrics or {}
+                                result.signal_metrics["decay_half_life"] = decay.ic_half_life_days
+                                result.signal_metrics["decay_action"] = decay.action.value
+
+            # Step 5d: Retrain ML models periodically (with performance-based trigger)
+            if self._ml_models and features:
+                self._cycles_since_retrain += 1
+                force_retrain = False
+                if (
+                    result.signal_metrics
+                    and result.signal_metrics.get("decay_action") == "review"
+                ):
+                    force_retrain = True
+                    logger.info("Performance-based retrain triggered by signal decay")
+                if self._cycles_since_retrain >= self._retrain_frequency or force_retrain:
+                    self._retrain_models(feature_matrix, data)
+                    self._cycles_since_retrain = 0
 
             result.status = "completed"
 
@@ -303,6 +351,38 @@ class ResearchRunner:
                 try:
                     metrics = model.train_model(feature_matrix, target)
                     self._track_oos_performance(model, metrics)
+
+                    # Persist trained model via ModelStore
+                    model_name = getattr(model, "feature_name", str(model))
+                    if (
+                        self._model_store is not None
+                        and hasattr(model, "_model")
+                        and model._model is not None
+                    ):
+                        feature_names = list(feature_matrix.columns)
+                        train_start = ""
+                        train_end = ""
+                        if hasattr(data.index, "min"):
+                            train_start = str(data.index.min())
+                            train_end = str(data.index.max())
+                        version_id = self._model_store.save_sklearn_model(
+                            model=model._model,
+                            model_name=model_name,
+                            train_start_date=train_start,
+                            train_end_date=train_end,
+                            feature_names=feature_names,
+                            metrics=metrics,
+                        )
+                        beats, details = self._model_store.check_challenger_beats_champion(
+                            model_name, version_id, metric_name="oos_ic",
+                        )
+                        if beats:
+                            self._model_store.promote_to_champion(model_name, version_id)
+                            logger.info(
+                                "Model '%s' v%s promoted to champion (improvement: %.4f)",
+                                model_name, version_id,
+                                details.get("improvement", 0),
+                            )
                 except Exception as e:
                     logger.warning("Model retrain failed: %s", e)
 
@@ -312,6 +392,30 @@ class ResearchRunner:
         record = {"model_name": model_name}
         record.update(metrics)
         self._oos_metrics.append(record)
+
+    def load_champion_models(self) -> int:
+        """Load champion model weights from ModelStore for each ML model.
+
+        Returns the number of models successfully loaded.
+        """
+        if self._model_store is None:
+            return 0
+        loaded = 0
+        for model in self._ml_models:
+            model_name = getattr(model, "feature_name", str(model))
+            try:
+                fitted = self._model_store.load_sklearn_model(model_name)
+                model._model = fitted
+                loaded += 1
+                logger.info("Loaded champion model for '%s'", model_name)
+            except FileNotFoundError:
+                logger.info(
+                    "No champion model found for '%s' — will train from scratch",
+                    model_name,
+                )
+            except Exception as e:
+                logger.warning("Failed to load model '%s': %s", model_name, e)
+        return loaded
 
     @property
     def oos_metrics(self) -> List[dict]:

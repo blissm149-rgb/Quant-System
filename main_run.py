@@ -67,6 +67,27 @@ from quant_fund.risk_engine.drawdown_monitor import DrawdownMonitor
 from quant_fund.risk_engine.leverage_controller import LeverageController
 from quant_fund.risk_engine.portfolio_kill_switch import KillSwitch
 from quant_fund.risk_engine.risk_cascade_coordinator import RiskCascadeCoordinator
+from quant_fund.infrastructure.trade_recorder import TradeRecorder
+from quant_fund.infrastructure.model_store import ModelStore
+from quant_fund.data_layer.data_validator import DataValidator
+from quant_fund.alpha_monitoring.alpha_performance_tracker import AlphaPerformanceTracker
+from quant_fund.alpha_monitoring.information_coefficient_monitor import (
+    InformationCoefficientMonitor,
+)
+from quant_fund.alpha_monitoring.signal_decay_detector import SignalDecayDetector
+from quant_fund.alpha_monitoring.strategy_retirement_manager import (
+    StrategyRetirementManager,
+)
+from quant_fund.risk_engine.exposure_monitor import ExposureMonitor
+from quant_fund.portfolio.factor_risk_model.factor_exposure_estimator import (
+    FactorExposureEstimator,
+)
+from quant_fund.portfolio.factor_risk_model.factor_covariance_estimator import (
+    FactorCovarianceEstimator,
+)
+from quant_fund.research_algorithms.machine_learning.gradient_boosted_tree_model import (
+    GradientBoostedTreeModel,
+)
 
 logger = logging.getLogger("main_run")
 
@@ -328,6 +349,10 @@ def build_engine(
         leverage_controller=leverage_controller,
     )
 
+    # Compliance audit trail
+    trades_db = db_path.replace(".db", "_trades.db") if db_path != ":memory:" else ":memory:"
+    trade_recorder = TradeRecorder(db_path=trades_db)
+
     # Market hours
     market_hours = MarketHoursEnforcer()
 
@@ -341,19 +366,40 @@ def build_engine(
             "relative_volume_window": 20,
         }
     })
+
+    # ML model for alpha generation (Step 5)
+    gbt_model = GradientBoostedTreeModel(config={
+        "gbt_n_estimators": 200,
+        "gbt_max_depth": 5,
+        "gbt_learning_rate": 0.05,
+        "gbt_min_train_days": 126,  # 6 months minimum
+        "random_seed": 42,
+    })
+
+    # Model persistence (Step 4)
+    model_store = ModelStore(config={"model_dir": "./models"})
+
     research_runner = ResearchRunner(config={
         "universe": tickers,
         "lookback_days": 252,
+        "retrain_frequency": 24,  # retrain every 24 research cycles
     })
     research_runner.inject_components(
-        feature_generators=tech_engine.generators,
+        feature_generators=tech_engine.generators + [gbt_model],
         feature_normalizer=FeatureNormalizer(),
         signal_ranking=SignalRankingEngine(config={
             "min_ic": 0.0,       # relax IC filter for live trading
             "min_ic_tstat": 0.0,  # relax t-stat filter
             "min_eval_days": 0,   # no minimum eval period
         }),
+        data_validator=DataValidator(),                        # Step 2
+        alpha_monitor=AlphaPerformanceTracker(),               # Step 3
+        ic_monitor=InformationCoefficientMonitor(),            # Step 3
+        signal_decay_detector=SignalDecayDetector(),            # Step 3
+        strategy_retirement_manager=StrategyRetirementManager(),  # Step 3
+        model_store=model_store,                               # Step 4
     )
+    research_runner.inject_ml_models([gbt_model])              # Step 5
 
     # Portfolio optimizer and constraints
     portfolio_optimizer = PortfolioOptimizer(config={"risk_aversion": 1.0})
@@ -364,6 +410,15 @@ def build_engine(
             "max_leverage": 1.0,           # long-only for paper trading
         }
     })
+
+    # Exposure monitor and factor risk model (Step 6)
+    exposure_monitor = ExposureMonitor(config={
+        "max_leverage": 1.0,
+        "max_sector_exposure": 0.40,
+        "max_single_name_exposure": 0.10,
+    })
+    factor_exposure_estimator = FactorExposureEstimator()
+    factor_covariance_estimator = FactorCovarianceEstimator()
 
     # Engine
     engine = TradingEngine(config={
@@ -396,6 +451,10 @@ def build_engine(
         research_runner=research_runner,
         portfolio_optimizer=portfolio_optimizer,
         constraint_engine=constraint_engine,
+        trade_recorder=trade_recorder,                         # Step 1
+        exposure_monitor=exposure_monitor,                     # Step 6
+        factor_exposure_estimator=factor_exposure_estimator,   # Step 6
+        factor_covariance_estimator=factor_covariance_estimator,  # Step 6
     )
 
     # Subscribe to tickers
@@ -479,10 +538,37 @@ def run_paper_trading(
                 "Historical data loaded: %d rows for research features",
                 len(historical),
             )
+
+            # Compute stock returns and factor returns for factor risk model (Step 6)
+            try:
+                if isinstance(historical.index, pd.MultiIndex):
+                    close_pivot = historical["close"].unstack(level="ticker")
+                else:
+                    close_pivot = historical[["close"]]
+                stock_returns = close_pivot.pct_change().dropna()
+                market_return = stock_returns.mean(axis=1)
+                factor_returns = pd.DataFrame({"market": market_return})
+                engine.inject_components(
+                    stock_returns=stock_returns,
+                    factor_returns=factor_returns,
+                )
+                logger.info(
+                    "Stock returns and factor returns computed: %d dates",
+                    len(stock_returns),
+                )
+            except Exception:
+                logger.warning("Factor returns computation failed", exc_info=True)
         else:
             logger.warning("Historical data fetch returned empty — research will use fallback weights")
     except Exception:
         logger.warning("Historical data fetch failed — research will use fallback weights", exc_info=True)
+
+    # Load champion ML models from ModelStore (Step 4)
+    research_runner = engine._research_runner
+    if research_runner is not None:
+        loaded = research_runner.load_champion_models()
+        if loaded > 0:
+            logger.info("Loaded %d champion ML model(s) from ModelStore", loaded)
 
     # Seed equal-weight targets as a starting point. The research pipeline
     # will overwrite these with alpha-driven weights on the first cycle.

@@ -132,6 +132,7 @@ class TradingEngine:
         self._live_data_adapter = None
         self._risk_cascade = None
         self._execution_quality_monitor = None
+        self._trade_recorder = None
         self._strategy_allocator = None
         self._strategy_nav_allocations: Dict[str, float] = {}
         self._capacity_model = None
@@ -625,6 +626,17 @@ class TradingEngine:
             strategy_id=self._strategy_id,
         )
 
+        # Record orders for compliance audit trail
+        if self._trade_recorder is not None:
+            for order in orders:
+                self._trade_recorder.record_order(
+                    strategy_id=getattr(order, "strategy_id", self._strategy_id),
+                    ticker=order.ticker,
+                    side=order.side.value,
+                    quantity=order.quantity,
+                    order_type=order.order_type.value,
+                )
+
         if orders:
             acks = self._order_router.route_orders(orders)
             fills = sum(
@@ -657,22 +669,22 @@ class TradingEngine:
                         )
                     )
 
-                    # Record execution quality
-                    if self._execution_quality_monitor is not None:
-                        order = order_by_id.get(ack.order_id)
-                        if order is not None:
-                            decision_price = prices.get(order.ticker, 0.0)
-                            # Use mid price as proxy for fill price when
-                            # actual fill data isn't directly on the ack
-                            fill_price = decision_price
-                            if self._broker is not None:
-                                recent_fills = getattr(
-                                    self._broker, "_fills", []
-                                )
-                                for f in reversed(recent_fills):
-                                    if f.order_id == ack.order_id:
-                                        fill_price = f.fill_price
-                                        break
+                    # Resolve fill price for downstream consumers
+                    order = order_by_id.get(ack.order_id)
+                    if order is not None:
+                        decision_price = prices.get(order.ticker, 0.0)
+                        fill_price = decision_price
+                        if self._broker is not None:
+                            recent_fills = getattr(
+                                self._broker, "_fills", []
+                            )
+                            for f in reversed(recent_fills):
+                                if f.order_id == ack.order_id:
+                                    fill_price = f.fill_price
+                                    break
+
+                        # Record execution quality
+                        if self._execution_quality_monitor is not None:
                             self._execution_quality_monitor.record_execution(
                                 order_id=ack.order_id,
                                 ticker=order.ticker,
@@ -680,6 +692,16 @@ class TradingEngine:
                                 target_qty=order.quantity,
                                 filled_qty=order.quantity,
                                 decision_price=decision_price,
+                                fill_price=fill_price,
+                            )
+
+                        # Record fill for compliance audit trail
+                        if self._trade_recorder is not None:
+                            self._trade_recorder.record_fill(
+                                order_id=ack.order_id,
+                                ticker=order.ticker,
+                                side=order.side.value,
+                                quantity=order.quantity,
                                 fill_price=fill_price,
                             )
 
@@ -1050,6 +1072,13 @@ class TradingEngine:
             open_order_ids=open_ids,
         )
 
+        # Persist research runner retrain counter
+        if self._research_runner is not None:
+            try:
+                self._persistence.save_research_state(self._research_runner)
+            except Exception:
+                logger.debug("Failed to save research state", exc_info=True)
+
         # Periodic WAL checkpoint to prevent unbounded WAL file growth
         self._state_store.checkpoint()
 
@@ -1075,6 +1104,10 @@ class TradingEngine:
                 "Restored %d open order IDs from previous session",
                 len(open_ids),
             )
+
+        # Restore research runner retrain counter
+        if self._research_runner is not None:
+            self._persistence.restore_research_state(self._research_runner)
 
     # ------------------------------------------------------------------
     # Readiness checks

@@ -35,6 +35,7 @@ NS_OPEN_ORDERS = "open_orders"
 NS_SIGNALS = "signal_cache"
 NS_POSITIONS = "positions"
 NS_SYSTEM = "system"
+NS_RESEARCH = "research"
 
 
 class StatePersistenceManager:
@@ -230,6 +231,31 @@ class StatePersistenceManager:
         if data is None:
             return None
         return pd.Series(data, dtype=float)
+
+    # ------------------------------------------------------------------
+    # Research state (retrain counter)
+    # ------------------------------------------------------------------
+
+    def save_research_state(self, research_runner) -> None:
+        """Save research runner retrain counter for persistence across restarts."""
+        self._store.save(
+            NS_RESEARCH, "cycles_since_retrain",
+            research_runner._cycles_since_retrain,
+        )
+        logger.debug(
+            "Saved research state: cycles_since_retrain=%d",
+            research_runner._cycles_since_retrain,
+        )
+
+    def restore_research_state(self, research_runner) -> bool:
+        """Restore research runner retrain counter. Returns True if found."""
+        val = self._store.load(NS_RESEARCH, "cycles_since_retrain")
+        if val is None:
+            logger.info("No research state to restore")
+            return False
+        research_runner._cycles_since_retrain = val
+        logger.info("Restored research state: cycles_since_retrain=%d", val)
+        return True
 
     # ------------------------------------------------------------------
     # Open orders
