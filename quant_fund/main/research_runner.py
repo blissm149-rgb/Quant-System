@@ -250,19 +250,19 @@ class ResearchRunner:
                                 result.signal_metrics["decay_half_life"] = decay.ic_half_life_days
                                 result.signal_metrics["decay_action"] = decay.action.value
 
-            # Step 5d: Retrain ML models periodically (with performance-based trigger)
+            # Step 5d: Log retraining signals for the offline pipeline.
+            # Retraining NEVER happens in the live loop. The offline
+            # pipeline reads health events to prioritize models.
             if self._ml_models and features:
                 self._cycles_since_retrain += 1
-                force_retrain = False
                 if (
                     result.signal_metrics
                     and result.signal_metrics.get("decay_action") == "review"
                 ):
-                    force_retrain = True
-                    logger.info("Performance-based retrain triggered by signal decay")
-                if self._cycles_since_retrain >= self._retrain_frequency or force_retrain:
-                    self._retrain_models(feature_matrix, data)
-                    self._cycles_since_retrain = 0
+                    logger.info(
+                        "Signal decay detected -- offline pipeline will "
+                        "prioritize retraining on next scheduled run"
+                    )
 
             result.status = "completed"
 

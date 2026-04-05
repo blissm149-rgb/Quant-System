@@ -88,6 +88,8 @@ from quant_fund.portfolio.factor_risk_model.factor_covariance_estimator import (
 from quant_fund.research_algorithms.machine_learning.gradient_boosted_tree_model import (
     GradientBoostedTreeModel,
 )
+from quant_fund.infrastructure.model_loader import ModelRegistry
+from quant_fund.monitoring.model_health_monitor import ModelHealthMonitor
 
 logger = logging.getLogger("main_run")
 
@@ -379,6 +381,23 @@ def build_engine(
     # Model persistence (Step 4)
     model_store = ModelStore(config={"model_dir": "./models"})
 
+    # Model registry: read-only interface to versioned artifacts (ML lifecycle)
+    model_registry_path = os.path.join(PROJECT_ROOT, "models", "registry")
+    model_registry = None
+    if os.path.isdir(model_registry_path):
+        model_registry = ModelRegistry(
+            registry_path=model_registry_path,
+            auto_reload=True,
+        )
+
+    # Model health monitor: observe-only, never triggers retraining
+    model_health_monitor = ModelHealthMonitor(
+        event_log_path=os.path.join(PROJECT_ROOT, "logs", "health_events.jsonl"),
+        prediction_window=500,
+        drift_z_threshold=2.5,
+        staleness_hours=48,
+    )
+
     research_runner = ResearchRunner(config={
         "universe": tickers,
         "lookback_days": 252,
@@ -455,6 +474,8 @@ def build_engine(
         exposure_monitor=exposure_monitor,                     # Step 6
         factor_exposure_estimator=factor_exposure_estimator,   # Step 6
         factor_covariance_estimator=factor_covariance_estimator,  # Step 6
+        model_registry=model_registry,                        # ML lifecycle
+        model_health_monitor=model_health_monitor,            # ML lifecycle
     )
 
     # Subscribe to tickers

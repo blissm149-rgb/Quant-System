@@ -5,6 +5,9 @@ duplicated across 11 test files. All fixtures use deterministic
 seeds for reproducibility.
 """
 
+import json
+import pickle
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -169,3 +172,51 @@ def constraint_set():
         "max_leverage": 2.0,
         "dollar_neutral": True,
     }
+
+
+@pytest.fixture
+def tmp_registry(tmp_path):
+    """Create a temporary model registry with one production model.
+
+    Directory layout:
+        tmp_path/
+        +-- production/
+        |   +-- test_model -> ../versions/test_model/v1/
+        +-- staging/
+        +-- versions/
+        |   +-- test_model/
+        |       +-- v1/
+        |           +-- model.pkl
+        |           +-- metadata.json
+        +-- retired/
+    """
+    (tmp_path / "production").mkdir()
+    (tmp_path / "staging").mkdir()
+    (tmp_path / "versions" / "test_model" / "v1").mkdir(parents=True)
+    (tmp_path / "retired").mkdir()
+
+    # Write dummy model weights
+    weights = {"coefficients": [0.1, 0.2, 0.3]}
+    weights_path = tmp_path / "versions" / "test_model" / "v1" / "model.pkl"
+    with open(weights_path, "wb") as f:
+        pickle.dump(weights, f)
+
+    # Write metadata
+    metadata = {
+        "trained_at": "2026-04-04T22:00:00Z",
+        "data_hash": "abc123",
+        "validation": {
+            "oos_sharpe": 1.2,
+            "oos_max_drawdown": -0.08,
+            "prediction_mean": 0.001,
+            "prediction_std": 0.05,
+        },
+    }
+    meta_path = tmp_path / "versions" / "test_model" / "v1" / "metadata.json"
+    meta_path.write_text(json.dumps(metadata))
+
+    # Create production symlink
+    prod_link = tmp_path / "production" / "test_model"
+    prod_link.symlink_to("../versions/test_model/v1/")
+
+    return tmp_path
