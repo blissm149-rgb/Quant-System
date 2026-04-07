@@ -1,5 +1,11 @@
 """Paper trading runner — simulated trading loop.
 
+.. deprecated::
+    This module is superseded by ``TradingEngine`` in
+    ``quant_fund/main/trading_engine.py`` with ``main_run.py`` as the CLI
+    entry point. Use ``python main_run.py`` for paper trading instead.
+    This module will be removed in a future release.
+
 Runs the full pipeline in paper mode using the simulation broker:
 1. Research cycle (compute features → alpha scores)
 2. Portfolio construction (optimise → constraints)
@@ -13,6 +19,13 @@ strategy can be promoted to live via the approval workflow.
 """
 
 import logging
+import warnings
+
+warnings.warn(
+    "PaperTradingRunner is deprecated. Use TradingEngine via main_run.py instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 

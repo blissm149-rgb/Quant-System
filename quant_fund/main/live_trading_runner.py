@@ -1,5 +1,11 @@
 """Live trading runner — production trading loop.
 
+.. deprecated::
+    This module is superseded by ``TradingEngine`` in
+    ``quant_fund/main/trading_engine.py``. Use ``TradingEngine`` with a
+    live broker adapter instead. This module will be removed in a future
+    release.
+
 Only activated after:
 - Strategy passes governance/approval_workflow.py
 - Minimum 6 months paper trading
@@ -12,6 +18,13 @@ simulation broker.
 """
 
 import logging
+import warnings
+
+warnings.warn(
+    "LiveTradingRunner is deprecated. Use TradingEngine with a live broker adapter instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 

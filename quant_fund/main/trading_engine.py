@@ -14,6 +14,11 @@ Lifecycle:
 The engine uses the EventBus for component communication and the
 SystemStateMachine for lifecycle control. All state is periodically
 persisted via StatePersistenceManager.
+
+Heavy lifting is delegated to focused modules:
+- convergence_loop: order convergence toward target weights
+- research_optimizer: research → factor model → optimization pipeline
+- engine_health: reconciliation, health checks, state persistence
 """
 
 import logging
@@ -49,6 +54,15 @@ from quant_fund.infrastructure.system_state_machine import (
     SystemState,
     SystemStateMachine,
 )
+from quant_fund.main.convergence_loop import run_convergence_tick
+from quant_fund.main.engine_health import (
+    register_readiness_checks,
+    restore_state,
+    run_health_check,
+    run_reconciliation,
+    take_snapshot,
+)
+from quant_fund.main.research_optimizer import run_research_and_optimize
 from quant_fund.monitoring.alerting_system import AlertingSystem, AlertLevel
 from quant_fund.monitoring.pnl_dashboard import PnLDashboard
 from quant_fund.monitoring.system_health_monitor import (
@@ -144,6 +158,8 @@ class TradingEngine:
         self._stock_returns: Optional[pd.DataFrame] = None
         self._factor_returns: Optional[pd.DataFrame] = None
         self._historical_data: Optional[pd.DataFrame] = None
+        self._model_registry = None
+        self._model_health_monitor = None
 
         # Context data (injected or updated)
         self._sector_map: Optional[Dict[str, str]] = None
@@ -185,7 +201,8 @@ class TradingEngine:
         execution_quality_monitor, strategy_allocator, capacity_model,
         factor_exposure_estimator, factor_covariance_estimator,
         market_hours_enforcer, stock_returns, factor_returns,
-        sector_map, factor_exposures.
+        sector_map, factor_exposures, trade_recorder,
+        model_registry, model_health_monitor.
         """
         for name, component in components.items():
             attr = f"_{name}"
@@ -234,7 +251,6 @@ class TradingEngine:
         """Handle new market data event."""
         if not self._state_machine.can_trade:
             return
-        # Update health monitor
         if self._health_monitor is not None:
             feed = event.payload.get("feed", "default")
             self._health_monitor.record_data_timestamp(
@@ -279,16 +295,11 @@ class TradingEngine:
         self._install_signal_handlers()
 
         try:
-            # Phase 1: Initialize
             self._initialize()
-
-            # Phase 2: Main loop
             self._main_loop()
-
         except Exception:
             logger.exception("TradingEngine crashed")
         finally:
-            # Phase 3: Shutdown
             self._shutdown()
 
     def _initialize(self) -> None:
@@ -296,7 +307,16 @@ class TradingEngine:
         logger.info("Phase 1: Initialization")
 
         # Restore persisted state
-        self._restore_state()
+        results, cached_scores, open_ids = restore_state(
+            persistence=self._persistence,
+            kill_switch=self._kill_switch,
+            drawdown_monitor=self._drawdown_monitor,
+            pnl_dashboard=self._pnl_dashboard,
+            state_machine=self._state_machine,
+            research_runner=self._research_runner,
+        )
+        if cached_scores is not None:
+            self._latest_alpha_scores = cached_scores
 
         # Connect data feed
         if self._live_data_adapter is not None:
@@ -307,7 +327,13 @@ class TradingEngine:
                 logger.exception("Failed to connect data feed")
 
         # Register readiness checks
-        self._register_readiness_checks()
+        register_readiness_checks(
+            state_machine=self._state_machine,
+            broker=self._broker,
+            order_generator=self._order_generator,
+            order_router=self._order_router,
+            kill_switch=self._kill_switch,
+        )
 
         # Transition to DATA_READY
         self._state_machine.transition_to(
@@ -331,7 +357,13 @@ class TradingEngine:
         self._event_bus.start()
 
         # Reconcile with broker on startup
-        self._run_reconciliation()
+        run_reconciliation(
+            reconciliation=self._reconciliation,
+            broker=self._broker,
+            pnl_dashboard=self._pnl_dashboard,
+            order_router=self._order_router,
+            event_bus=self._event_bus,
+        )
 
     def _main_loop(self) -> None:
         """The core always-on loop."""
@@ -372,7 +404,6 @@ class TradingEngine:
                             pd.Timestamp.now(tz="America/New_York")
                         )
                         if not can_trade:
-                            # Outside market hours — skip convergence
                             self._event_bus.drain()
                             time.sleep(self._tick_interval_s)
                             continue
@@ -423,7 +454,6 @@ class TradingEngine:
                             "error_budget",
                             f"Main loop error budget exhausted after {consecutive_errors} consecutive errors",
                         )
-                    # Reset counter to allow recovery if system resumes
                     consecutive_errors = 0
 
             time.sleep(self._tick_interval_s)
@@ -455,435 +485,93 @@ class TradingEngine:
         logger.info("TradingEngine shutdown complete")
 
     # ------------------------------------------------------------------
-    # Portfolio convergence loop
+    # Delegated operations
     # ------------------------------------------------------------------
 
     def _convergence_tick(self) -> None:
-        """One iteration of the portfolio convergence loop.
-
-        1. Get current target weights
-        2. Get current positions from broker
-        3. Enforce leverage constraints
-        4. Check exposure limits (may block orders)
-        5. Generate orders for delta
-        6. Route orders
-        """
+        """Delegate to convergence_loop module."""
         with self._data_lock:
             target_weights = self._target_weights
-        if target_weights is None:
-            return
-        if self._broker is None or self._order_generator is None:
-            return
-        if self._order_router is None:
-            return
-
-        nav = self._broker.get_account_value()
-        if nav <= 0:
-            return
-
-        # Scale NAV by strategy allocation if allocator is active
-        if (
-            self._strategy_allocator is not None
-            and self._strategy_id in self._strategy_nav_allocations
-        ):
-            alloc_fraction = self._strategy_nav_allocations[self._strategy_id]
-            if alloc_fraction <= 0:
-                return  # zero allocation — no orders
-            nav = nav * alloc_fraction
-
-        current_positions = self._broker.get_positions()
-        prices = pd.Series(dtype=float)
-        tickers = list(target_weights.index)
-        if tickers:
-            md = self._broker.get_market_data(tickers)
-            if not md.empty and "mid" in md.columns:
-                prices = md["mid"]
-
-        # --- Risk gate ---
-        if self._risk_cascade is not None:
-            # Unified cascade: kill_switch → drawdown → leverage → exposure
-            cascade_result = self._risk_cascade.run_cascade(
-                nav, target_weights, self._sector_map,
-                self._factor_exposures,
-            )
-            if cascade_result.orders_blocked:
-                action = "halt" if cascade_result.kill_switch_triggered else "exposure_breach"
-                self._event_bus.publish(
-                    Event(
-                        event_type=EventType.RISK_CHECK,
-                        payload={
-                            "action": action,
-                            "kill_switch": cascade_result.kill_switch_triggered,
-                            "breaches": [
-                                {
-                                    "type": b.exposure_type,
-                                    "current": b.current_value,
-                                    "limit": b.limit,
-                                }
-                                for b in cascade_result.exposure_breaches
-                            ],
-                        },
-                        source="convergence_loop",
-                        priority=EventPriority.HIGH,
-                    )
-                )
-                if cascade_result.kill_switch_triggered:
-                    from quant_fund.infrastructure.system_state_machine import SystemState
-                    self._state_machine.try_transition(
-                        SystemState.RISK_HALT,
-                        reason=f"Kill switch triggered at NAV={nav:.2f}",
-                    )
-                return
-            working_weights = cascade_result.adjusted_weights
-        else:
-            # Fallback: inline risk checks (Module A)
-            working_weights = target_weights
-
-            if self._leverage_controller is not None:
-                working_weights = self._leverage_controller.enforce(working_weights)
-
-            if self._exposure_monitor is not None:
-                breaches = self._exposure_monitor.check(
-                    working_weights,
-                    sector_map=self._sector_map,
-                    factor_exposures=self._factor_exposures,
-                )
-                if breaches:
-                    logger.warning(
-                        "Exposure breach in convergence — orders blocked: %s",
-                        [b.message for b in breaches],
-                    )
-                    self._event_bus.publish(
-                        Event(
-                            event_type=EventType.RISK_CHECK,
-                            payload={
-                                "action": "exposure_breach",
-                                "breaches": [
-                                    {
-                                        "type": b.exposure_type,
-                                        "current": b.current_value,
-                                        "limit": b.limit,
-                                    }
-                                    for b in breaches
-                                ],
-                            },
-                            source="convergence_loop",
-                            priority=EventPriority.HIGH,
-                        )
-                    )
-                    return
-
-        # --- Capacity constraint: scale high-impact trades ---
-        if self._capacity_model is not None and not prices.empty:
-            # Compute trade notional per ticker
-            current_weight = pd.Series(dtype=float)
-            if nav > 0 and not current_positions.empty:
-                current_value = current_positions * prices.reindex(
-                    current_positions.index
-                ).fillna(0)
-                current_weight = current_value / nav
-
-            weight_delta = working_weights.subtract(
-                current_weight, fill_value=0.0
-            ).abs()
-            trade_notional = weight_delta * nav
-
-            # Get ADV from market data
-            adv_series = pd.Series(dtype=float)
-            if tickers:
-                md = self._broker.get_market_data(tickers)
-                if not md.empty and "adv" in md.columns:
-                    adv_series = md["adv"]
-
-            vol = self._volatility_estimates
-            if vol is None:
-                vol = pd.Series(0.02, index=trade_notional.index)
-
-            if not adv_series.empty:
-                impact = self._capacity_model.estimate_impact_portfolio(
-                    trade_notional, adv_series, vol,
-                )
-                # Scale down high-impact tickers by 50%
-                for ticker in impact.index:
-                    if impact[ticker] > self._max_impact_bps and ticker in working_weights.index:
-                        midpoint = (
-                            working_weights[ticker]
-                            + current_weight.get(ticker, 0.0)
-                        ) / 2.0
-                        working_weights = working_weights.copy()
-                        working_weights[ticker] = midpoint
-                        logger.info(
-                            "Capacity constraint: %s impact %.1f bps > %.1f, "
-                            "scaling toward current weight",
-                            ticker, impact[ticker], self._max_impact_bps,
-                        )
-
-        orders = self._order_generator.generate_orders(
-            target_weights=working_weights,
-            current_positions=current_positions,
-            prices=prices,
-            nav=nav,
+        run_convergence_tick(
+            target_weights=target_weights,
+            broker=self._broker,
+            order_generator=self._order_generator,
+            order_router=self._order_router,
+            event_bus=self._event_bus,
+            state_machine=self._state_machine,
+            risk_cascade=self._risk_cascade,
+            leverage_controller=self._leverage_controller,
+            exposure_monitor=self._exposure_monitor,
+            capacity_model=self._capacity_model,
+            execution_quality_monitor=self._execution_quality_monitor,
+            trade_recorder=self._trade_recorder,
+            strategy_allocator=self._strategy_allocator,
+            strategy_nav_allocations=self._strategy_nav_allocations,
             strategy_id=self._strategy_id,
+            sector_map=self._sector_map,
+            factor_exposures=self._factor_exposures,
+            volatility_estimates=self._volatility_estimates,
+            max_impact_bps=self._max_impact_bps,
         )
-
-        # Record orders for compliance audit trail
-        if self._trade_recorder is not None:
-            for order in orders:
-                self._trade_recorder.record_order(
-                    strategy_id=getattr(order, "strategy_id", self._strategy_id),
-                    ticker=order.ticker,
-                    side=order.side.value,
-                    quantity=order.quantity,
-                    order_type=order.order_type.value,
-                )
-
-        if orders:
-            acks = self._order_router.route_orders(orders)
-            fills = sum(
-                1
-                for a in acks
-                if a.status in (OrderStatus.FILLED, OrderStatus.PARTIAL_FILL)
-            )
-            logger.info(
-                "Convergence: %d orders, %d fills", len(orders), fills
-            )
-
-            # Build order lookup for execution quality
-            order_by_id = {o.order_id: o for o in orders}
-
-            # Publish fill events and record execution quality
-            for ack in acks:
-                if ack.status in (
-                    OrderStatus.FILLED,
-                    OrderStatus.PARTIAL_FILL,
-                ):
-                    self._event_bus.publish(
-                        Event(
-                            event_type=EventType.ORDER_FILL,
-                            payload={
-                                "order_id": ack.order_id,
-                                "status": ack.status.value,
-                            },
-                            source="convergence_loop",
-                            priority=EventPriority.HIGH,
-                        )
-                    )
-
-                    # Resolve fill price for downstream consumers
-                    order = order_by_id.get(ack.order_id)
-                    if order is not None:
-                        decision_price = prices.get(order.ticker, 0.0)
-                        fill_price = decision_price
-                        if self._broker is not None:
-                            recent_fills = getattr(
-                                self._broker, "_fills", []
-                            )
-                            for f in reversed(recent_fills):
-                                if f.order_id == ack.order_id:
-                                    fill_price = f.fill_price
-                                    break
-
-                        # Record execution quality
-                        if self._execution_quality_monitor is not None:
-                            self._execution_quality_monitor.record_execution(
-                                order_id=ack.order_id,
-                                ticker=order.ticker,
-                                side=order.side.value,
-                                target_qty=order.quantity,
-                                filled_qty=order.quantity,
-                                decision_price=decision_price,
-                                fill_price=fill_price,
-                            )
-
-                        # Record fill for compliance audit trail
-                        if self._trade_recorder is not None:
-                            self._trade_recorder.record_fill(
-                                order_id=ack.order_id,
-                                ticker=order.ticker,
-                                side=order.side.value,
-                                quantity=order.quantity,
-                                fill_price=fill_price,
-                            )
-
-    def get_execution_quality_summary(self):
-        """Get aggregate execution quality metrics."""
-        if self._execution_quality_monitor is None:
-            return None
-        return self._execution_quality_monitor.get_summary()
-
-    # ------------------------------------------------------------------
-    # Research → optimization pipeline
-    # ------------------------------------------------------------------
 
     def _run_research_and_optimize(self) -> None:
-        """Run the research → factor model → optimization → target weights chain.
+        """Delegate to research_optimizer module."""
+        target_weights, alpha_scores, factor_exposures = run_research_and_optimize(
+            research_runner=self._research_runner,
+            portfolio_optimizer=self._portfolio_optimizer,
+            constraint_engine=self._constraint_engine,
+            broker=self._broker,
+            event_bus=self._event_bus,
+            factor_exposure_estimator=self._factor_exposure_estimator,
+            factor_covariance_estimator=self._factor_covariance_estimator,
+            stock_returns=self._stock_returns,
+            factor_returns=self._factor_returns,
+            factor_exposures=self._factor_exposures,
+            sector_map=self._sector_map,
+            historical_data=self._historical_data,
+            live_data_adapter=self._live_data_adapter,
+        )
+        if alpha_scores is not None:
+            self._latest_alpha_scores = alpha_scores
+        if factor_exposures is not None:
+            self._factor_exposures = factor_exposures
+        if target_weights is not None:
+            with self._data_lock:
+                self._target_weights = target_weights
 
-        Mirrors PaperTradingRunner steps 3-6:
-        1. Run research cycle to produce alpha scores
-        2. Estimate factor exposures and covariance
-        3. Build constraints
-        4. Optimize portfolio
-        5. Set target weights for convergence loop
-        """
-        if self._research_runner is None:
-            return
-
-        as_of = pd.Timestamp.now(tz="America/New_York")
-
-        # Get market data for research — prefer historical cache (needed for
-        # feature computation lookbacks) over single latest bar
-        market_data = self._historical_data
-        if market_data is None and self._live_data_adapter is not None:
-            try:
-                market_data = self._live_data_adapter.get_latest_bar()
-            except Exception:
-                logger.warning("Failed to get latest market data for research")
-
-        # Step 1: Research cycle → alpha scores
-        try:
-            research_result = self._research_runner.run_cycle(
-                as_of=as_of, market_data=market_data,
-            )
-            alpha_scores = research_result.alpha_scores
-        except Exception:
-            logger.exception("Research cycle failed")
-            return
-
-        if alpha_scores is None or alpha_scores.empty:
-            logger.info("Research produced no alpha scores")
-            return
-
-        self._latest_alpha_scores = alpha_scores
-        logger.info("Research produced alpha scores for %d tickers", len(alpha_scores))
-
-        # Publish signal event
-        self._event_bus.publish(
-            Event(
-                event_type=EventType.SIGNAL_GENERATED,
-                payload={
-                    "alpha_scores": alpha_scores.to_dict(),
-                    "as_of": str(as_of),
-                },
-                source="research_runner",
-                priority=EventPriority.NORMAL,
-            )
+    def _take_snapshot(self) -> None:
+        """Delegate to engine_health module."""
+        take_snapshot(
+            persistence=self._persistence,
+            state_store=self._state_store,
+            broker=self._broker,
+            order_router=self._order_router,
+            kill_switch=self._kill_switch,
+            drawdown_monitor=self._drawdown_monitor,
+            pnl_dashboard=self._pnl_dashboard,
+            state_machine=self._state_machine,
+            latest_alpha_scores=self._latest_alpha_scores,
+            research_runner=self._research_runner,
         )
 
-        # Step 2: Factor model estimation
-        factor_exposures = self._factor_exposures
-        factor_covariance = None
-
-        if (
-            self._factor_exposure_estimator is not None
-            and self._factor_covariance_estimator is not None
-            and self._stock_returns is not None
-            and self._factor_returns is not None
-        ):
-            try:
-                factor_exposures = self._factor_exposure_estimator.estimate(
-                    returns=self._stock_returns,
-                    factor_returns=self._factor_returns,
-                    as_of=as_of,
-                    sector_map=self._sector_map,
-                )
-                self._factor_exposures = factor_exposures
-
-                factor_covariance = self._factor_covariance_estimator.estimate(
-                    factor_returns=self._factor_returns,
-                    as_of=as_of,
-                )
-            except Exception:
-                logger.exception("Factor model estimation failed")
-
-        # Step 3: Portfolio optimization
-        if self._portfolio_optimizer is not None:
-            try:
-                constraints = None
-                if self._constraint_engine is not None:
-                    constraints = self._constraint_engine.build_constraints(
-                        sector_map=self._sector_map,
-                    )
-
-                current_positions = pd.Series(dtype=float)
-                if self._broker is not None:
-                    current_positions = self._broker.get_positions()
-
-                target_weights = self._portfolio_optimizer.optimize(
-                    alpha_scores=alpha_scores,
-                    factor_covariance=factor_covariance,
-                    factor_exposures=factor_exposures,
-                    constraints=constraints,
-                    current_positions=current_positions,
-                )
-
-                with self._data_lock:
-                    self._target_weights = target_weights
-                logger.info(
-                    "Optimization produced weights for %d tickers (gross=%.3f)",
-                    len(target_weights),
-                    target_weights.abs().sum(),
-                )
-            except Exception:
-                logger.exception("Portfolio optimization failed")
-        else:
-            # No optimizer — use alpha scores as simple weights
-            # Normalize to reasonable gross exposure
-            total = alpha_scores.abs().sum()
-            if total > 0:
-                with self._data_lock:
-                    self._target_weights = alpha_scores / total * 0.5
-                logger.info(
-                    "No optimizer — using normalized alpha scores as weights"
-                )
-
-    def update_target_weights(self, weights: pd.Series) -> None:
-        """Set the target portfolio weights for convergence."""
-        with self._data_lock:
-            self._target_weights = weights
-        logger.info("Target weights updated: %d tickers", len(weights))
-
-    def update_sector_map(self, sector_map: Dict[str, str]) -> None:
-        """Set the ticker → sector mapping for exposure monitoring."""
-        self._sector_map = sector_map
-
-    def update_factor_exposures(self, factor_exposures: pd.DataFrame) -> None:
-        """Set the current factor exposures (tickers x factors) for risk checks."""
-        self._factor_exposures = factor_exposures
-
-    def update_volatility_estimates(self, volatility: pd.Series) -> None:
-        """Set per-ticker daily volatility estimates for capacity model."""
-        self._volatility_estimates = volatility
-
-    def update_strategy_allocations(
-        self, strategy_sharpes: Dict[str, float], **kwargs
-    ) -> Dict[str, float]:
-        """Compute and cache strategy allocations via the injected allocator.
-
-        Parameters
-        ----------
-        strategy_sharpes : dict
-            Mapping of strategy_id → trailing Sharpe ratio.
-        **kwargs
-            Passed through to DynamicStrategyAllocator.allocate()
-            (e.g. correlation_penalties, regime_adjustments).
-
-        Returns
-        -------
-        dict
-            Mapping of strategy_id → allocation weight.
-        """
-        if self._strategy_allocator is None:
-            return {}
-        allocations = self._strategy_allocator.allocate(
-            strategy_sharpes, **kwargs
+    def _run_reconciliation(self) -> None:
+        """Delegate to engine_health module."""
+        run_reconciliation(
+            reconciliation=self._reconciliation,
+            broker=self._broker,
+            pnl_dashboard=self._pnl_dashboard,
+            order_router=self._order_router,
+            event_bus=self._event_bus,
         )
-        self._strategy_nav_allocations = allocations
-        logger.info("Strategy allocations updated: %s", allocations)
-        return allocations
 
-    # ------------------------------------------------------------------
-    # Risk checks
-    # ------------------------------------------------------------------
+    def _run_health_check(self) -> None:
+        """Delegate to engine_health module."""
+        run_health_check(
+            health_monitor=self._health_monitor,
+            broker=self._broker,
+            state_machine=self._state_machine,
+            event_bus=self._event_bus,
+        )
 
     def _check_risk(self) -> None:
         """Run risk checks: kill switch and drawdown."""
@@ -922,244 +610,46 @@ class TradingEngine:
                         level, "drawdown_monitor", alert.message
                     )
 
+    def get_execution_quality_summary(self):
+        """Get aggregate execution quality metrics."""
+        if self._execution_quality_monitor is None:
+            return None
+        return self._execution_quality_monitor.get_summary()
+
     # ------------------------------------------------------------------
-    # Reconciliation
+    # Public update methods
     # ------------------------------------------------------------------
 
-    def _run_reconciliation(self) -> None:
-        """Run a reconciliation cycle."""
-        if self._reconciliation is None or self._broker is None:
-            return
+    def update_target_weights(self, weights: pd.Series) -> None:
+        """Set the target portfolio weights for convergence."""
+        with self._data_lock:
+            self._target_weights = weights
+        logger.info("Target weights updated: %d tickers", len(weights))
 
-        internal_positions = pd.Series(dtype=float)
-        if self._broker is not None:
-            # For reconciliation, we compare our last-known positions
-            # against what the broker reports
-            internal_positions = self._broker.get_positions()
+    def update_sector_map(self, sector_map: Dict[str, str]) -> None:
+        """Set the ticker → sector mapping for exposure monitoring."""
+        self._sector_map = sector_map
 
-        nav = (
-            self._pnl_dashboard.latest.nav
-            if self._pnl_dashboard is not None
-            and self._pnl_dashboard.latest is not None
-            else 0.0
+    def update_factor_exposures(self, factor_exposures: pd.DataFrame) -> None:
+        """Set the current factor exposures (tickers x factors) for risk checks."""
+        self._factor_exposures = factor_exposures
+
+    def update_volatility_estimates(self, volatility: pd.Series) -> None:
+        """Set per-ticker daily volatility estimates for capacity model."""
+        self._volatility_estimates = volatility
+
+    def update_strategy_allocations(
+        self, strategy_sharpes: Dict[str, float], **kwargs
+    ) -> Dict[str, float]:
+        """Compute and cache strategy allocations via the injected allocator."""
+        if self._strategy_allocator is None:
+            return {}
+        allocations = self._strategy_allocator.allocate(
+            strategy_sharpes, **kwargs
         )
-
-        # Get open order IDs from router
-        open_ids: Set[str] = set()
-        if self._order_router is not None:
-            open_ids = {
-                r.acknowledgement.order_id
-                for r in self._order_router.get_active_orders()
-                if r.acknowledgement is not None
-            }
-
-        try:
-            result = self._reconciliation.reconcile(
-                internal_positions=internal_positions,
-                internal_nav=nav,
-                internal_open_order_ids=open_ids,
-            )
-        except Exception:
-            logger.exception("Reconciliation failed")
-            return
-
-        if not result.all_matched:
-            logger.warning("Reconciliation found discrepancies: %s", result.to_dict())
-            self._event_bus.publish(
-                Event(
-                    event_type=EventType.RECONCILIATION,
-                    payload=result.to_dict(),
-                    source="reconciliation_engine",
-                    priority=EventPriority.HIGH,
-                )
-            )
-
-    # ------------------------------------------------------------------
-    # Health monitoring
-    # ------------------------------------------------------------------
-
-    def _run_health_check(self) -> None:
-        """Run system health check."""
-        if self._health_monitor is None:
-            return
-
-        custom_checks = []
-
-        # Broker connectivity
-        if self._broker is not None:
-            try:
-                self._broker.get_account_value()
-                custom_checks.append(
-                    HealthCheck(
-                        component="broker",
-                        status="healthy",
-                        message="Broker responding",
-                    )
-                )
-            except Exception as e:
-                custom_checks.append(
-                    HealthCheck(
-                        component="broker",
-                        status="down",
-                        message=f"Broker error: {e}",
-                    )
-                )
-
-        # State machine
-        custom_checks.append(
-            HealthCheck(
-                component="state_machine",
-                status="healthy",
-                message=f"State: {self._state_machine.state.value}",
-            )
-        )
-
-        snapshot = self._health_monitor.run_health_check(
-            custom_checks=custom_checks
-        )
-
-        self._event_bus.publish(
-            Event(
-                event_type=EventType.SYSTEM_HEALTH,
-                payload={
-                    "overall_status": snapshot.overall_status,
-                    "uptime_s": snapshot.uptime_s,
-                    "data_feed_lag_s": snapshot.data_feed_lag_s,
-                },
-                source="health_monitor",
-                priority=EventPriority.LOW,
-            )
-        )
-
-        # If system is down, transition to DATA_READY (suspend trading)
-        if (
-            snapshot.overall_status == "down"
-            and self._state_machine.can_trade
-        ):
-            self._state_machine.try_transition(
-                SystemState.DATA_READY,
-                reason="Health check failed: system down",
-            )
-
-    # ------------------------------------------------------------------
-    # State persistence
-    # ------------------------------------------------------------------
-
-    def _take_snapshot(self) -> None:
-        """Persist current state of all components."""
-        positions = None
-        if self._broker is not None:
-            try:
-                positions = self._broker.get_positions()
-            except Exception:
-                pass
-
-        open_ids = None
-        if self._order_router is not None:
-            open_ids = [
-                r.acknowledgement.order_id
-                for r in self._order_router.get_active_orders()
-                if r.acknowledgement is not None
-            ]
-
-        self._persistence.snapshot_all(
-            kill_switch=self._kill_switch,
-            drawdown_monitor=self._drawdown_monitor,
-            pnl_dashboard=self._pnl_dashboard,
-            state_machine=self._state_machine,
-            positions=positions,
-            alpha_scores=self._latest_alpha_scores,
-            open_order_ids=open_ids,
-        )
-
-        # Persist research runner retrain counter
-        if self._research_runner is not None:
-            try:
-                self._persistence.save_research_state(self._research_runner)
-            except Exception:
-                logger.debug("Failed to save research state", exc_info=True)
-
-        # Periodic WAL checkpoint to prevent unbounded WAL file growth
-        self._state_store.checkpoint()
-
-    def _restore_state(self) -> None:
-        """Restore state from the most recent snapshot."""
-        results = self._persistence.restore_all(
-            kill_switch=self._kill_switch,
-            drawdown_monitor=self._drawdown_monitor,
-            pnl_dashboard=self._pnl_dashboard,
-            state_machine=self._state_machine,
-        )
-        logger.info("State restore results: %s", results)
-
-        # Restore signal cache
-        cached_scores = self._persistence.restore_signal_cache()
-        if cached_scores is not None:
-            self._latest_alpha_scores = cached_scores
-
-        # Restore open order IDs for dedup
-        open_ids = self._persistence.restore_open_orders()
-        if open_ids:
-            logger.info(
-                "Restored %d open order IDs from previous session",
-                len(open_ids),
-            )
-
-        # Restore research runner retrain counter
-        if self._research_runner is not None:
-            self._persistence.restore_research_state(self._research_runner)
-
-    # ------------------------------------------------------------------
-    # Readiness checks
-    # ------------------------------------------------------------------
-
-    def _register_readiness_checks(self) -> None:
-        """Register readiness checks for the trading-enabled transition."""
-
-        def check_broker() -> ReadinessCheck:
-            if self._broker is None:
-                return ReadinessCheck(
-                    name="broker", passed=False, message="No broker configured"
-                )
-            try:
-                nav = self._broker.get_account_value()
-                return ReadinessCheck(
-                    name="broker",
-                    passed=nav > 0,
-                    message=f"NAV={nav:.2f}",
-                )
-            except Exception as e:
-                return ReadinessCheck(
-                    name="broker", passed=False, message=str(e)
-                )
-
-        def check_order_pipeline() -> ReadinessCheck:
-            has_og = self._order_generator is not None
-            has_or = self._order_router is not None
-            passed = has_og and has_or
-            return ReadinessCheck(
-                name="order_pipeline",
-                passed=passed,
-                message=(
-                    "OK"
-                    if passed
-                    else f"Missing: OG={has_og} OR={has_or}"
-                ),
-            )
-
-        def check_risk() -> ReadinessCheck:
-            has_ks = self._kill_switch is not None
-            return ReadinessCheck(
-                name="risk",
-                passed=has_ks,
-                message="OK" if has_ks else "No kill switch configured",
-            )
-
-        self._state_machine.register_readiness_check("broker", check_broker)
-        self._state_machine.register_readiness_check(
-            "order_pipeline", check_order_pipeline
-        )
-        self._state_machine.register_readiness_check("risk", check_risk)
+        self._strategy_nav_allocations = allocations
+        logger.info("Strategy allocations updated: %s", allocations)
+        return allocations
 
     # ------------------------------------------------------------------
     # Signal handlers
@@ -1171,7 +661,6 @@ class TradingEngine:
             signal.signal(signal.SIGTERM, self._handle_signal)
             signal.signal(signal.SIGINT, self._handle_signal)
         except (ValueError, OSError):
-            # Can't install signal handlers from non-main thread
             logger.debug("Cannot install signal handlers (not main thread)")
 
     def _handle_signal(self, signum, frame) -> None:
