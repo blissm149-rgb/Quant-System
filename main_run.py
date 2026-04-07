@@ -70,6 +70,11 @@ def main():
         help="SQLite database path for state persistence (default: quantfund_paper.db)",
     )
     parser.add_argument(
+        "--mode", default="paper",
+        choices=["paper", "live", "backtest", "debug"],
+        help="Operating mode (default: paper)",
+    )
+    parser.add_argument(
         "--skip-market-hours", action="store_true",
         help="Disable market hours enforcement (trade anytime)",
     )
@@ -102,8 +107,9 @@ def main():
     logging.getLogger().addHandler(file_handler)
 
     print("=" * 72)
-    print("  QUANTFUND V8 -- PAPER TRADING")
+    print(f"  QUANTFUND V8 -- {args.mode.upper()} TRADING")
     print("=" * 72)
+    print(f"  Mode:            {args.mode}")
     print(f"  Tickers:         {', '.join(args.tickers)}")
     print(f"  Initial Cash:    ${args.cash:,.2f}")
     print(f"  Research Every:  {args.research_interval:.0f}s")

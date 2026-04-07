@@ -1,12 +1,14 @@
-"""Disaster recovery manager — planning and configuration layer.
+"""Disaster recovery manager — planning and execution layer.
 
 Generates recovery plans, backup metadata, and failover configurations
-for various failure scenarios. This is a planning layer: it produces
-recovery instructions for operators to execute, rather than performing
-recovery actions directly.
+for various failure scenarios. Also performs actual backup execution
+(SQLite copy, config snapshot) when backed by a backup directory.
 """
 
+import hashlib
 import logging
+import os
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -162,6 +164,121 @@ class DisasterRecoveryManager:
 
         logger.info("Created backup %s for components %s", backup_id, components)
         return record.to_dict()
+
+    def execute_backup(
+        self,
+        components: list[str],
+        source_paths: Optional[Dict[str, str]] = None,
+    ) -> BackupRecord:
+        """Execute an actual backup: copy files to backup_dir.
+
+        Unlike ``create_backup`` which only records metadata, this method
+        copies the actual SQLite databases and config files to the backup
+        directory.
+
+        Args:
+            components: List of component names to back up.
+            source_paths: Mapping of component name to source file path.
+                E.g. ``{"state_store": "quantfund_paper.db"}``.
+
+        Returns:
+            BackupRecord with size and checksum populated.
+        """
+        if not components:
+            raise ValueError("At least one component must be specified")
+
+        unknown = [c for c in components if c not in BACKUPABLE_COMPONENTS]
+        if unknown:
+            raise ValueError(f"Unknown backup components: {unknown}")
+
+        source_paths = source_paths or {}
+        backup_id = uuid.uuid4().hex[:16]
+        now = datetime.now(timezone.utc)
+        timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+
+        backup_subdir = os.path.join(self._backup_dir, f"backup_{timestamp_str}_{backup_id}")
+        os.makedirs(backup_subdir, exist_ok=True)
+
+        total_size = 0
+        copied_files: List[str] = []
+
+        for component in components:
+            src = source_paths.get(component)
+            if src is None or not os.path.exists(src):
+                logger.warning(
+                    "Skipping backup of %s: source path %s not found",
+                    component, src,
+                )
+                continue
+
+            dest = os.path.join(backup_subdir, f"{component}_{os.path.basename(src)}")
+            try:
+                shutil.copy2(src, dest)
+                file_size = os.path.getsize(dest)
+                total_size += file_size
+                copied_files.append(dest)
+                logger.info("Backed up %s -> %s (%d bytes)", src, dest, file_size)
+            except OSError as e:
+                logger.error("Failed to copy %s: %s", src, e)
+
+        # Compute checksum of all backed-up files
+        checksum = self._compute_directory_checksum(backup_subdir)
+
+        record = BackupRecord(
+            backup_id=backup_id,
+            timestamp=now.isoformat(),
+            components=list(components),
+            status="complete" if copied_files else "partial",
+            size_bytes=total_size,
+            checksum=checksum,
+            metadata={
+                "backup_dir": backup_subdir,
+                "files": copied_files,
+            },
+        )
+        self._backups.append(record)
+
+        if len(self._backups) > self._max_backups:
+            removed = self._backups.pop(0)
+            old_dir = removed.metadata.get("backup_dir")
+            if old_dir and os.path.isdir(old_dir):
+                shutil.rmtree(old_dir, ignore_errors=True)
+            logger.info("Evicted oldest backup %s", removed.backup_id)
+
+        logger.info(
+            "Backup %s complete: %d files, %d bytes",
+            backup_id, len(copied_files), total_size,
+        )
+        return record
+
+    def generate_backup_plan(self, components: list[str]) -> BackupRecord:
+        """Generate a backup plan (metadata only, no file copy).
+
+        This is a lightweight version of ``execute_backup`` for use
+        in contexts where the caller just needs a plan or record.
+        """
+        return BackupRecord(
+            backup_id=uuid.uuid4().hex[:16],
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            components=list(components),
+            status="planned",
+            metadata={"backup_dir": self._backup_dir},
+        )
+
+    @staticmethod
+    def _compute_directory_checksum(directory: str) -> str:
+        """Compute a combined SHA-256 checksum of all files in a directory."""
+        h = hashlib.sha256()
+        for root, _, files in sorted(os.walk(directory)):
+            for fname in sorted(files):
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, "rb") as f:
+                        for chunk in iter(lambda: f.read(8192), b""):
+                            h.update(chunk)
+                except OSError:
+                    pass
+        return h.hexdigest()
 
     def list_backups(self) -> list[dict]:
         """List all available backup records.

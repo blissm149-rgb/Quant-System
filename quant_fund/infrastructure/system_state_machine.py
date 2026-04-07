@@ -4,23 +4,26 @@ The trading system operates under strict state control. Trading may
 only occur in the TRADING_ENABLED state. All state transitions are
 validated and logged.
 
-Valid states:
-    INITIALIZING    — system is starting up, loading state
-    DATA_READY      — market data feed is connected and validated
-    TRADING_ENABLED — actively trading
-    RISK_HALT       — risk limit breached, trading suspended
-    SHUTDOWN        — graceful shutdown in progress
+Operational states:
+    INITIALIZING         — system is starting up, loading state
+    PRE_MARKET           — data refresh, model warm-up, broker check
+    DATA_READY           — market data feed is connected and validated
+    TRADING_ENABLED      — actively trading
+    POST_MARKET          — EOD P&L, trade reporting, reconciliation
+    OVERNIGHT            — model training, data ingestion, maintenance
+    WEEKEND_MAINTENANCE  — full data rebuild, deep diagnostics
+    RISK_HALT            — risk limit breached, trading suspended
+    SHUTDOWN             — graceful shutdown in progress
 
-Valid transitions:
-    INITIALIZING    → DATA_READY       (data feed connected)
-    INITIALIZING    → SHUTDOWN         (startup failure)
-    DATA_READY      → TRADING_ENABLED  (readiness checks passed)
-    DATA_READY      → SHUTDOWN         (operator request)
-    TRADING_ENABLED → RISK_HALT        (kill switch / exposure breach)
-    TRADING_ENABLED → DATA_READY       (data feed lost)
-    TRADING_ENABLED → SHUTDOWN         (end of day / operator request)
-    RISK_HALT       → TRADING_ENABLED  (manual reset after review)
-    RISK_HALT       → SHUTDOWN         (operator request)
+Key transitions:
+    INITIALIZING        → PRE_MARKET / DATA_READY / SHUTDOWN
+    PRE_MARKET          → DATA_READY / SHUTDOWN
+    DATA_READY          → TRADING_ENABLED / SHUTDOWN
+    TRADING_ENABLED     → POST_MARKET / RISK_HALT / DATA_READY / SHUTDOWN
+    POST_MARKET         → OVERNIGHT / SHUTDOWN
+    OVERNIGHT           → PRE_MARKET / WEEKEND_MAINTENANCE / SHUTDOWN
+    WEEKEND_MAINTENANCE → PRE_MARKET / OVERNIGHT / SHUTDOWN
+    RISK_HALT           → TRADING_ENABLED / POST_MARKET / SHUTDOWN
 """
 
 import logging
@@ -36,15 +39,24 @@ class SystemState(str, Enum):
     """System lifecycle states."""
 
     INITIALIZING = "INITIALIZING"
+    PRE_MARKET = "PRE_MARKET"
     DATA_READY = "DATA_READY"
     TRADING_ENABLED = "TRADING_ENABLED"
+    POST_MARKET = "POST_MARKET"
+    OVERNIGHT = "OVERNIGHT"
+    WEEKEND_MAINTENANCE = "WEEKEND_MAINTENANCE"
     RISK_HALT = "RISK_HALT"
     SHUTDOWN = "SHUTDOWN"
 
 
-# Legal state transitions: from_state → set of allowed to_states
+# Legal state transitions: from_state -> set of allowed to_states
 VALID_TRANSITIONS: Dict[SystemState, Set[SystemState]] = {
     SystemState.INITIALIZING: {
+        SystemState.PRE_MARKET,
+        SystemState.DATA_READY,
+        SystemState.SHUTDOWN,
+    },
+    SystemState.PRE_MARKET: {
         SystemState.DATA_READY,
         SystemState.SHUTDOWN,
     },
@@ -54,12 +66,28 @@ VALID_TRANSITIONS: Dict[SystemState, Set[SystemState]] = {
         SystemState.INITIALIZING,  # re-init after data loss
     },
     SystemState.TRADING_ENABLED: {
+        SystemState.POST_MARKET,
         SystemState.RISK_HALT,
         SystemState.DATA_READY,
         SystemState.SHUTDOWN,
     },
+    SystemState.POST_MARKET: {
+        SystemState.OVERNIGHT,
+        SystemState.SHUTDOWN,
+    },
+    SystemState.OVERNIGHT: {
+        SystemState.PRE_MARKET,
+        SystemState.WEEKEND_MAINTENANCE,
+        SystemState.SHUTDOWN,
+    },
+    SystemState.WEEKEND_MAINTENANCE: {
+        SystemState.PRE_MARKET,
+        SystemState.OVERNIGHT,
+        SystemState.SHUTDOWN,
+    },
     SystemState.RISK_HALT: {
         SystemState.TRADING_ENABLED,
+        SystemState.POST_MARKET,
         SystemState.SHUTDOWN,
     },
     SystemState.SHUTDOWN: set(),  # terminal state
@@ -166,6 +194,32 @@ class SystemStateMachine:
     @property
     def is_initializing(self) -> bool:
         return self._state == SystemState.INITIALIZING
+
+    @property
+    def is_pre_market(self) -> bool:
+        return self._state == SystemState.PRE_MARKET
+
+    @property
+    def is_post_market(self) -> bool:
+        return self._state == SystemState.POST_MARKET
+
+    @property
+    def is_overnight(self) -> bool:
+        return self._state == SystemState.OVERNIGHT
+
+    @property
+    def is_weekend_maintenance(self) -> bool:
+        return self._state == SystemState.WEEKEND_MAINTENANCE
+
+    @property
+    def is_market_phase(self) -> bool:
+        """True during any market-hours-adjacent phase."""
+        return self._state in (
+            SystemState.PRE_MARKET,
+            SystemState.DATA_READY,
+            SystemState.TRADING_ENABLED,
+            SystemState.POST_MARKET,
+        )
 
     # ------------------------------------------------------------------
     # State transitions
