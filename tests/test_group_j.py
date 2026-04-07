@@ -15,7 +15,6 @@ from quant_fund.monitoring.execution_quality_monitor import ExecutionQualityMoni
 from quant_fund.monitoring.alerting_system import AlertingSystem, AlertLevel
 from quant_fund.monitoring.system_health_monitor import (
 
-pytestmark = [pytest.mark.tier2]
     HealthCheck,
     SystemHealthMonitor,
 )
@@ -24,6 +23,8 @@ from quant_fund.governance.approval_workflow import (
     ApprovalState,
     ApprovalWorkflow,
 )
+
+pytestmark = [pytest.mark.tier2]
 from quant_fund.governance.deployment_controller import DeploymentController
 
 

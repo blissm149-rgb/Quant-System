@@ -14,7 +14,6 @@ import pytest
 from quant_fund.feature_factory.base_feature_generator import BaseFeatureGenerator
 from quant_fund.feature_factory.data_alignment_engine import (
 
-pytestmark = [pytest.mark.tier2]
     DataAlignmentEngine,
     LookAheadError,
 )
@@ -29,6 +28,8 @@ from quant_fund.feature_factory.technical_indicator_engine import (
     TechnicalIndicatorEngine,
     VolatilityFeature,
 )
+
+pytestmark = [pytest.mark.tier2]
 
 
 # ---------------------------------------------------------------------------

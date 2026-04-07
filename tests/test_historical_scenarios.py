@@ -14,7 +14,6 @@ import pytest
 
 from tests.conftest import (
 
-pytestmark = [pytest.mark.tier3]
     STANDARD_MARKET_DATA,
     STANDARD_SECTORS,
     STANDARD_TICKERS,
@@ -29,6 +28,8 @@ from tests.real_market_data import (
     make_real_ohlcv,
     make_real_returns,
 )
+
+pytestmark = [pytest.mark.tier3]
 
 from quant_fund.broker_interface.simulation_broker import SimulationBroker
 from quant_fund.execution.order_management.order_generator import OrderGenerator

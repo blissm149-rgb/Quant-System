@@ -11,7 +11,6 @@ import pytest
 
 from tests.conftest import (
 
-pytestmark = [pytest.mark.tier3]
     make_ohlcv,
     make_returns,
     make_factor_returns,
@@ -26,6 +25,8 @@ from quant_fund.broker_interface.broker_abstraction_layer import (
     OrderStatus,
     OrderType,
 )
+
+pytestmark = [pytest.mark.tier3]
 from quant_fund.broker_interface.simulation_broker import SimulationBroker
 from quant_fund.config.config_validator import (
     ConfigValidator,

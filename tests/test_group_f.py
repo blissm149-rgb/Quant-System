@@ -18,12 +18,13 @@ import pytest
 
 from quant_fund.portfolio.factor_risk_model.factor_exposure_estimator import (
 
-pytestmark = [pytest.mark.tier2]
     FactorExposureEstimator,
 )
 from quant_fund.portfolio.factor_risk_model.factor_covariance_estimator import (
     FactorCovarianceEstimator,
 )
+
+pytestmark = [pytest.mark.tier2]
 from quant_fund.portfolio.factor_risk_model.risk_decomposition import (
     RiskDecomposition,
 )

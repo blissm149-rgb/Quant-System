@@ -26,7 +26,6 @@ from quant_fund.alpha_discovery.signal_ranking_engine import SignalRankingEngine
 from quant_fund.alpha_monitoring.alpha_performance_tracker import AlphaPerformanceTracker
 from quant_fund.alpha_monitoring.information_coefficient_monitor import (
 
-pytestmark = [pytest.mark.tier2]
     InformationCoefficientMonitor,
     AlertLevel,
 )
@@ -34,6 +33,8 @@ from quant_fund.alpha_monitoring.signal_decay_detector import (
     SignalDecayDetector,
     DecayAction,
 )
+
+pytestmark = [pytest.mark.tier2]
 from quant_fund.alpha_monitoring.strategy_retirement_manager import (
     StrategyRetirementManager,
     StrategyStatus,

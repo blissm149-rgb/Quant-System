@@ -23,7 +23,6 @@ import pytest
 
 from quant_fund.infrastructure.event_bus import (
 
-pytestmark = [pytest.mark.tier2]
     Event,
     EventBus,
     EventPriority,
@@ -35,6 +34,8 @@ from quant_fund.infrastructure.system_state_machine import (
     SystemState,
     SystemStateMachine,
 )
+
+pytestmark = [pytest.mark.tier2]
 from quant_fund.infrastructure.state_store import StateStore
 from quant_fund.infrastructure.state_persistence_manager import (
     StatePersistenceManager,

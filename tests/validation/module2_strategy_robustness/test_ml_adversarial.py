@@ -20,9 +20,10 @@ from quant_fund.research_algorithms.machine_learning.gradient_boosted_tree_model
 )
 from quant_fund.research_algorithms.machine_learning.model_ensemble import (
 
-pytestmark = [pytest.mark.validation, pytest.mark.tier4]
     ModelEnsemble,
 )
+
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 def _make_data(n=500, n_features=5, seed=42):

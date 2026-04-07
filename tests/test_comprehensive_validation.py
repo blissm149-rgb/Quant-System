@@ -16,7 +16,6 @@ from zoneinfo import ZoneInfo
 
 from tests.conftest import (
 
-pytestmark = [pytest.mark.tier3]
     STANDARD_MARKET_DATA,
     STANDARD_SECTORS,
     STANDARD_TICKERS,
@@ -24,6 +23,8 @@ pytestmark = [pytest.mark.tier3]
     make_ohlcv,
     make_returns,
 )
+
+pytestmark = [pytest.mark.tier3]
 
 ET = ZoneInfo("America/New_York")
 

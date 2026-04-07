@@ -10,7 +10,6 @@ import pytest
 
 from quant_fund.research_cluster.distributed_backtest_runner import (
 
-pytestmark = [pytest.mark.tier2]
     BacktestJob,
     BacktestResult,
     DistributedBacktestRunner,
@@ -19,6 +18,8 @@ from quant_fund.research_cluster.parallel_signal_evaluator import (
     ParallelSignalEvaluator,
     _evaluate_single_signal,
 )
+
+pytestmark = [pytest.mark.tier2]
 from quant_fund.research_cluster.experiment_scheduler import (
     Experiment,
     ExperimentScheduler,

@@ -201,7 +201,11 @@ class TestWalkForwardSignal:
 class TestResearchRunnerRetrain:
 
     def test_model_retrained_at_least_once(self):
-        """ResearchRunner should retrain ML models during backtest."""
+        """ResearchRunner._retrain_models should invoke model training.
+
+        Note: the live loop delegates retraining to the offline pipeline,
+        so we exercise _retrain_models directly.
+        """
         rng = np.random.RandomState(42)
         n_dates = 50
         dates = pd.bdate_range("2022-01-01", periods=n_dates)
@@ -223,6 +227,7 @@ class TestResearchRunnerRetrain:
         class _MockModel:
             feature_name = "mock_model"
             train_count = 0
+            _model = None
             def train_model(self, features, returns):
                 _MockModel.train_count += 1
                 return {"train_r2": 0.1}
@@ -231,7 +236,10 @@ class TestResearchRunnerRetrain:
         runner.inject_components(feature_generators=[_MockFeatureGen()])
         runner.inject_ml_models([_MockModel()])
 
-        results = runner.run_backtest(dates=dates[10:], market_data=market_data)
+        # Run a cycle to produce a feature matrix, then retrain directly
+        result = runner.run_cycle(as_of=dates[-1], market_data=market_data)
+        assert result.feature_matrix is not None, "Feature matrix was not produced"
+        runner._retrain_models(result.feature_matrix, market_data)
 
         assert _MockModel.train_count >= 1, "Model was never retrained"
         assert runner.retrain_count >= 1

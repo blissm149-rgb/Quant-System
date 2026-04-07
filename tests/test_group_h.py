@@ -11,7 +11,6 @@ import pytest
 
 from quant_fund.broker_interface.broker_abstraction_layer import (
 
-pytestmark = [pytest.mark.tier2]
     Fill,
     Order,
     OrderAcknowledgement,
@@ -23,6 +22,8 @@ from quant_fund.broker_interface.simulation_broker import SimulationBroker
 from quant_fund.execution.microstructure_models.bid_ask_spread_model import (
     BidAskSpreadModel,
 )
+
+pytestmark = [pytest.mark.tier2]
 from quant_fund.execution.microstructure_models.order_book_liquidity_model import (
     OrderBookLevel,
     OrderBookLiquidityModel,

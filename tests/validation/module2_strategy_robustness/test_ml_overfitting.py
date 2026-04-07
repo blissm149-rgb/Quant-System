@@ -16,9 +16,10 @@ from quant_fund.research_algorithms.machine_learning.overfitting_detector import
 )
 from quant_fund.research_algorithms.machine_learning.gradient_boosted_tree_model import (
 
-pytestmark = [pytest.mark.validation, pytest.mark.tier4]
     GradientBoostedTreeModel,
 )
+
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 def _make_data(n=500, n_features=5, signal_strength=0.05, seed=42):

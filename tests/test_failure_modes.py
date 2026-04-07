@@ -12,7 +12,6 @@ from tests.conftest import STANDARD_TICKERS, STANDARD_MARKET_DATA
 
 from quant_fund.broker_interface.broker_abstraction_layer import (
 
-pytestmark = [pytest.mark.tier3]
     Order,
     OrderSide,
     OrderStatus,
@@ -23,6 +22,8 @@ from quant_fund.config.config_validator import (
     ConfigValidator,
     ConfigurationError,
 )
+
+pytestmark = [pytest.mark.tier3]
 from quant_fund.execution.order_management.order_generator import OrderGenerator
 from quant_fund.execution.order_management.order_router import OrderRouter
 from quant_fund.execution.order_management.order_safety_validator import (

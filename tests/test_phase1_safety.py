@@ -13,7 +13,6 @@ import pytest
 
 from quant_fund.broker_interface.broker_abstraction_layer import (
 
-pytestmark = [pytest.mark.tier1]
     Order,
     OrderSide,
     OrderStatus,
@@ -30,6 +29,8 @@ from quant_fund.config.config_validator import (
     ConfigValidator,
     validate_config,
 )
+
+pytestmark = [pytest.mark.tier1]
 from quant_fund.execution.order_management.order_safety_validator import (
     OrderSafetyValidator,
     SafetyRejection,

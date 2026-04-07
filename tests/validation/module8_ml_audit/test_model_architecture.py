@@ -23,9 +23,10 @@ from quant_fund.research_algorithms.machine_learning.model_ensemble import (
 from quant_fund.representation_learning.temporal_model_lstm import TemporalModelLSTM
 from quant_fund.representation_learning.temporal_model_transformer import (
 
-pytestmark = [pytest.mark.validation, pytest.mark.tier4]
     TemporalModelTransformer,
 )
+
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 # ---------------------------------------------------------------------------

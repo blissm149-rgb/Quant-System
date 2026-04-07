@@ -20,7 +20,6 @@ import pytest
 
 from quant_fund.data_layer.live_data_stream_adapter import (
 
-pytestmark = [pytest.mark.tier2]
     FeedProvider,
     LiveDataStreamAdapter,
     NoOpFeedProvider,
@@ -32,6 +31,8 @@ from quant_fund.infrastructure.disaster_recovery_manager import (
     RECOVERY_SCENARIOS,
     DisasterRecoveryManager,
 )
+
+pytestmark = [pytest.mark.tier2]
 from quant_fund.infrastructure.docker_environment_setup import (
     VALID_ENVIRONMENTS,
     DockerEnvironmentSetup,

@@ -24,11 +24,12 @@ from quant_fund.data_layer.connectors.csv_connector import CSVConnector
 from quant_fund.data_layer.data_storage_manager import DataStorageManager
 from quant_fund.infrastructure.ingestion_scheduler import (
 
-pytestmark = [pytest.mark.tier2]
     IngestionScheduler,
     ScheduleEntry,
 )
 from quant_fund.infrastructure.model_store import ModelStore
+
+pytestmark = [pytest.mark.tier2]
 
 
 # ── Helpers ────────────────────────────────────────────────────────

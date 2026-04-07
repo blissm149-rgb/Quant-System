@@ -15,9 +15,10 @@ from quant_fund.research_algorithms.machine_learning.baseline_models import (
 )
 from quant_fund.research_algorithms.machine_learning.model_comparison_framework import (
 
-pytestmark = [pytest.mark.validation, pytest.mark.tier4]
     ModelComparisonFramework,
 )
+
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 def _make_data(n=600, n_features=5, seed=42):

@@ -16,13 +16,14 @@ import pytest
 from quant_fund.risk_engine.portfolio_kill_switch import KillSwitch
 from quant_fund.risk_engine.drawdown_monitor import (
 
-pytestmark = [pytest.mark.tier2]
     DrawdownMonitor,
     DrawdownAlertLevel,
 )
 from quant_fund.risk_engine.exposure_monitor import ExposureMonitor
 from quant_fund.risk_engine.leverage_controller import LeverageController
 from quant_fund.risk_engine.stress_test_engine import StressTestEngine
+
+pytestmark = [pytest.mark.tier2]
 
 
 TICKERS = ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "JPM", "BAC", "WMT"]

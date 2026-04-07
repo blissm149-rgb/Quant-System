@@ -18,13 +18,14 @@ import yaml
 
 from quant_fund.data_layer.corporate_action_adjuster import (
 
-pytestmark = [pytest.mark.tier2]
     CorporateAction,
     CorporateActionAdjuster,
 )
 from quant_fund.data_layer.data_storage_manager import DataStorageManager
 from quant_fund.data_layer.data_validator import DataValidator
 from quant_fund.data_layer.historical_data_loader import HistoricalDataLoader
+
+pytestmark = [pytest.mark.tier2]
 
 
 # ---------------------------------------------------------------------------

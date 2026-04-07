@@ -12,9 +12,10 @@ from quant_fund.infrastructure.experiment_tracker import ExperimentTracker
 from quant_fund.infrastructure.seed_manager import SeedManager
 from quant_fund.research_algorithms.machine_learning.gradient_boosted_tree_model import (
 
-pytestmark = [pytest.mark.tier3]
     GradientBoostedTreeModel,
 )
+
+pytestmark = [pytest.mark.tier3]
 
 
 # ---------------------------------------------------------------------------
