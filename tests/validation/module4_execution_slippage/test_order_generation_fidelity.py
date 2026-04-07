@@ -12,7 +12,7 @@ from quant_fund.execution.order_management.order_generator import OrderGenerator
 from quant_fund.broker_interface.broker_abstraction_layer import OrderSide
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestOrderGenerationFidelity:

@@ -6,6 +6,8 @@ import pytest
 
 from quant_fund.infrastructure.data_builder import DataBuilder
 
+pytestmark = [pytest.mark.tier1]
+
 
 class TestDataBuilder:
     """Tests for the training dataset builder."""

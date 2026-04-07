@@ -15,6 +15,8 @@ import pytest
 from zoneinfo import ZoneInfo
 
 from tests.conftest import (
+
+pytestmark = [pytest.mark.tier3]
     STANDARD_MARKET_DATA,
     STANDARD_SECTORS,
     STANDARD_TICKERS,

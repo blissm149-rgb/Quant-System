@@ -13,7 +13,7 @@ from quant_fund.risk_engine.drawdown_monitor import (
 )
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestDrawdownMonitoring:

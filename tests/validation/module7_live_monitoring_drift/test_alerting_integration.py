@@ -15,7 +15,7 @@ from quant_fund.monitoring.alerting_system import (
 )
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestAlertDispatch:

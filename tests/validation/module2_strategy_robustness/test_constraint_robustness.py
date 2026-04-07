@@ -15,7 +15,7 @@ from quant_fund.portfolio.portfolio_construction.constraint_engine import (
 from tests.conftest import STANDARD_TICKERS, STANDARD_SECTORS
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestConstraintRobustness:

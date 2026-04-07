@@ -15,7 +15,7 @@ from tests.validation.shared.metrics import (
 )
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestBootstrapConfidence:

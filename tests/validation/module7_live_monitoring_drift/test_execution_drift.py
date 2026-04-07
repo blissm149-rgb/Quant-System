@@ -16,7 +16,7 @@ from quant_fund.monitoring.execution_quality_monitor import (
 )
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestImplementationShortfall:

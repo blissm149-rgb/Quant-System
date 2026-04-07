@@ -15,6 +15,8 @@ from quant_fund.research_algorithms.machine_learning.overfitting_detector import
     overfit_probability,
 )
 from quant_fund.research_algorithms.machine_learning.gradient_boosted_tree_model import (
+
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
     GradientBoostedTreeModel,
 )
 

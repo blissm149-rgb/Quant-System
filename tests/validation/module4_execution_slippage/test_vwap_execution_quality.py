@@ -16,7 +16,7 @@ from quant_fund.execution.execution_algorithms.vwap_execution import (
 from quant_fund.broker_interface.broker_abstraction_layer import OrderSide
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestVWAPExecutionQuality:

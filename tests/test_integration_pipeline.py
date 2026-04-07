@@ -10,6 +10,8 @@ import pandas as pd
 import pytest
 
 from tests.conftest import (
+
+pytestmark = [pytest.mark.tier3]
     make_ohlcv,
     make_returns,
     make_factor_returns,

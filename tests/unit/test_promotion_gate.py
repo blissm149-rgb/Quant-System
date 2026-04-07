@@ -8,6 +8,8 @@ import pytest
 
 from quant_fund.infrastructure.promotion_gate import PromotionGate
 
+pytestmark = [pytest.mark.tier1]
+
 
 class TestPromotionGate:
     """Tests for the candidate model promotion system."""

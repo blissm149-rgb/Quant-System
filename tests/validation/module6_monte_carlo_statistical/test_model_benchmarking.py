@@ -14,6 +14,8 @@ from quant_fund.research_algorithms.machine_learning.baseline_models import (
     MomentumBaseline,
 )
 from quant_fund.research_algorithms.machine_learning.model_comparison_framework import (
+
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
     ModelComparisonFramework,
 )
 

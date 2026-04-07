@@ -14,7 +14,7 @@ from tests.conftest import make_ohlcv, STANDARD_TICKERS
 from tests.generators.stress_scenario_generator import inject_duplicates
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestTimestampAlignment:

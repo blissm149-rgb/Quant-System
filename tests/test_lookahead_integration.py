@@ -12,6 +12,8 @@ import pytest
 
 from tests.conftest import make_ohlcv, make_returns, STANDARD_TICKERS
 
+pytestmark = [pytest.mark.tier3]
+
 
 class TestDataAlignmentLookAhead:
     """Test that DataAlignmentEngine enforces point-in-time boundaries."""

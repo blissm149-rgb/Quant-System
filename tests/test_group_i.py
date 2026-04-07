@@ -9,6 +9,8 @@ import pandas as pd
 import pytest
 
 from quant_fund.research_cluster.distributed_backtest_runner import (
+
+pytestmark = [pytest.mark.tier2]
     BacktestJob,
     BacktestResult,
     DistributedBacktestRunner,

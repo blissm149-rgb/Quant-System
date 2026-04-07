@@ -15,6 +15,8 @@ from quant_fund.feature_factory.feature_normalizer import FeatureNormalizer
 from quant_fund.alpha_discovery.ml_feature_selector import MLFeatureSelector
 from quant_fund.main.research_runner import ResearchRunner
 
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
+
 
 # ---------------------------------------------------------------------------
 # Helpers

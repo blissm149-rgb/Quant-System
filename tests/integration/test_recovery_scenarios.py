@@ -19,6 +19,8 @@ from quant_fund.risk_engine.drawdown_monitor import DrawdownMonitor
 from quant_fund.risk_engine.portfolio_kill_switch import KillSwitch
 from tests.conftest import STANDARD_MARKET_DATA
 
+pytestmark = [pytest.mark.tier3]
+
 
 def _build_engine(state_db_path=":memory:", broker=None):
     """Build a fully-wired TradingEngine for recovery testing."""

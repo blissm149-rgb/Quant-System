@@ -17,7 +17,7 @@ from quant_fund.data_layer.corporate_action_adjuster import (
 from tests.conftest import make_ohlcv, STANDARD_TICKERS
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestDataLeakage:

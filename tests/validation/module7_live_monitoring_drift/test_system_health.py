@@ -15,7 +15,7 @@ from quant_fund.monitoring.system_health_monitor import (
 )
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestDataFeedFreshness:

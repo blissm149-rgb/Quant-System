@@ -17,6 +17,8 @@ import pytest
 import yaml
 
 from quant_fund.data_layer.corporate_action_adjuster import (
+
+pytestmark = [pytest.mark.tier2]
     CorporateAction,
     CorporateActionAdjuster,
 )

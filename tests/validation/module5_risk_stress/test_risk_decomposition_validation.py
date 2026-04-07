@@ -13,7 +13,7 @@ from quant_fund.portfolio.factor_risk_model.risk_decomposition import (
 )
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 def _make_risk_inputs():

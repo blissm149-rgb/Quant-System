@@ -19,7 +19,7 @@ from quant_fund.research_algorithms.mean_reversion.zscore_reversion_strategy imp
 from tests.conftest import make_ohlcv, STANDARD_TICKERS
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestSignalDecayAndTurnover:

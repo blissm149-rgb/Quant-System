@@ -19,6 +19,8 @@ from quant_fund.alternative_data.macro_data.macro_data_ingestion import MacroDat
 from quant_fund.alternative_data.macro_data.macro_feature_generation import MacroFeatureGeneration
 from quant_fund.alternative_data.macro_data.macro_regime_classifier import MacroRegimeClassifier, MacroRegime
 
+pytestmark = [pytest.mark.tier2]
+
 
 class TestAnalystEstimates:
 

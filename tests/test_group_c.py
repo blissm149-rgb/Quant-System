@@ -30,6 +30,8 @@ from quant_fund.research_algorithms.regime_models.hidden_markov_regime_model imp
 from quant_fund.research_algorithms.regime_models.volatility_regime_detector import VolatilityRegimeDetector, VolatilityRegime
 from quant_fund.research_algorithms.regime_models.market_state_classifier import MarketStateClassifier, MarketState
 
+pytestmark = [pytest.mark.tier2]
+
 
 # ---------------------------------------------------------------------------
 # Helpers

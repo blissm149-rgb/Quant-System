@@ -18,7 +18,7 @@ from tests.validation.shared.metrics import annualized_sharpe
 from tests.validation.shared.perturbation_engine import PerturbationEngine
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestMonteCarloRobustness:

@@ -14,7 +14,7 @@ from quant_fund.execution.microstructure_models.bid_ask_spread_model import (
 from quant_fund.portfolio.capacity_model.capacity_simulator import CapacitySimulator
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestSpreadAndCapacity:

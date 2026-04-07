@@ -10,7 +10,7 @@ import numpy as np
 from tests.validation.shared.metrics import deflated_sharpe_ratio
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestDeflatedSharpe:

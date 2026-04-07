@@ -17,7 +17,7 @@ from quant_fund.execution.reconciliation_engine import (
 from tests.conftest import STANDARD_MARKET_DATA
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 def _make_broker(initial_cash=1_000_000.0):

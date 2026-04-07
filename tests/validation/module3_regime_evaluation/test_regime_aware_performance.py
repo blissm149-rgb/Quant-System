@@ -21,7 +21,7 @@ from tests.validation.shared.backtest_harness import BacktestHarness
 from tests.validation.shared.metrics import annualized_sharpe, max_drawdown
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestRegimeAwarePerformance:

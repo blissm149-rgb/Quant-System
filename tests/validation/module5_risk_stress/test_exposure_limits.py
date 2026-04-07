@@ -11,7 +11,7 @@ import pandas as pd
 from quant_fund.risk_engine.exposure_monitor import ExposureMonitor
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestExposureLimits:

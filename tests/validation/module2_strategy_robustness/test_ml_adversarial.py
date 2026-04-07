@@ -19,6 +19,8 @@ from quant_fund.research_algorithms.machine_learning.gradient_boosted_tree_model
     GradientBoostedTreeModel,
 )
 from quant_fund.research_algorithms.machine_learning.model_ensemble import (
+
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
     ModelEnsemble,
 )
 

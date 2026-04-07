@@ -15,6 +15,8 @@ import pytest
 
 from quant_fund.risk_engine.portfolio_kill_switch import KillSwitch
 from quant_fund.risk_engine.drawdown_monitor import (
+
+pytestmark = [pytest.mark.tier2]
     DrawdownMonitor,
     DrawdownAlertLevel,
 )

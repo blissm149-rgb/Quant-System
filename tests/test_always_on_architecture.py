@@ -22,6 +22,8 @@ import pandas as pd
 import pytest
 
 from quant_fund.infrastructure.event_bus import (
+
+pytestmark = [pytest.mark.tier2]
     Event,
     EventBus,
     EventPriority,

@@ -19,6 +19,8 @@ from quant_fund.research_algorithms.machine_learning.temporal_cross_validator im
 from quant_fund.alpha_discovery.signal_ranking_engine import SignalRankingEngine
 from quant_fund.main.research_runner import ResearchRunner
 
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
+
 
 # ---------------------------------------------------------------------------
 # Helpers

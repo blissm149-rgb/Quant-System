@@ -9,6 +9,8 @@ import pytest
 
 from quant_fund.infrastructure.model_loader import LoadedModel, ModelRegistry
 
+pytestmark = [pytest.mark.tier1]
+
 
 class TestLoadedModel:
     """Tests for the LoadedModel dataclass."""

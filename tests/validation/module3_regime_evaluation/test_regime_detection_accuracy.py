@@ -21,7 +21,7 @@ from quant_fund.research_algorithms.regime_models.market_state_classifier import
 )
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 def _make_two_regime_returns(n_low=200, n_high=200, seed=42):

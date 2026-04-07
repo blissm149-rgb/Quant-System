@@ -15,11 +15,12 @@ markers = [
     "e2e: Full pipeline test",
     "stress: Fault injection and extreme load",
     "benchmark: Performance measurement",
-    "slow: Execution time > 10s",
     "stability: Long-duration stability test",
     "regression: Deterministic reproducibility and golden file tests",
     "validation: Validation, robustness and risk framework tests",
 ]
+
+timeout = 120
 
 filterwarnings = [
     "ignore::DeprecationWarning",

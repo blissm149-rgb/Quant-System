@@ -30,7 +30,7 @@ from quant_fund.alpha_monitoring.strategy_retirement_manager import (
 )
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestSignalDecayDetection:

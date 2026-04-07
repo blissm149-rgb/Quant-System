@@ -11,6 +11,8 @@ import pytest
 from tests.conftest import STANDARD_TICKERS, STANDARD_MARKET_DATA
 
 from quant_fund.broker_interface.broker_abstraction_layer import (
+
+pytestmark = [pytest.mark.tier3]
     Order,
     OrderSide,
     OrderStatus,

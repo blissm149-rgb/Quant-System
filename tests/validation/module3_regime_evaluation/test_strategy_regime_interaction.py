@@ -18,7 +18,7 @@ from quant_fund.research_algorithms.regime_models.volatility_regime_detector imp
 )
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestStrategyRegimeInteraction:

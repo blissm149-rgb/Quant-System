@@ -23,7 +23,7 @@ from tests.validation.shared.backtest_harness import BacktestHarness
 from tests.validation.shared.metrics import max_drawdown
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 def _extract_market_returns(ohlcv: pd.DataFrame) -> pd.Series:

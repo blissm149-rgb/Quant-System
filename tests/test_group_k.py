@@ -15,6 +15,8 @@ from quant_fund.monitoring.pnl_dashboard import PnLDashboard
 from quant_fund.governance.approval_workflow import ApprovalState, ApprovalWorkflow
 from quant_fund.governance.deployment_controller import DeploymentController
 
+pytestmark = [pytest.mark.tier2]
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

@@ -16,7 +16,7 @@ from quant_fund.data_layer.data_validator import DataValidator
 from tests.conftest import make_ohlcv, STANDARD_TICKERS
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestLookaheadInvariantSuite:

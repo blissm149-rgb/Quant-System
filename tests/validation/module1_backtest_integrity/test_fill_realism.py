@@ -16,7 +16,7 @@ from quant_fund.execution.execution_algorithms.vwap_execution import (
 from tests.conftest import STANDARD_MARKET_DATA
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestFillRealism:

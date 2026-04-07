@@ -12,6 +12,8 @@ import pandas as pd
 import pytest
 
 from quant_fund.broker_interface.broker_abstraction_layer import (
+
+pytestmark = [pytest.mark.tier1]
     Order,
     OrderSide,
     OrderStatus,

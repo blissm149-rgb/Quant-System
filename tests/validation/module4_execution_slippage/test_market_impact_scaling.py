@@ -11,7 +11,7 @@ import pandas as pd
 from quant_fund.portfolio.capacity_model.market_impact_model import MarketImpactModel
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestMarketImpactScaling:

@@ -12,7 +12,7 @@ from quant_fund.feature_factory.data_alignment_engine import DataAlignmentEngine
 from tests.conftest import make_ohlcv, STANDARD_TICKERS
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestSurvivorshipBias:

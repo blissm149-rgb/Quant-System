@@ -27,7 +27,7 @@ from quant_fund.feature_factory.technical_indicator_engine import (
 )
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 # ── helpers ─────────────────────────────────────────────────────────

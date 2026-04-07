@@ -19,6 +19,8 @@ import pandas as pd
 import pytest
 
 from quant_fund.data_layer.live_data_stream_adapter import (
+
+pytestmark = [pytest.mark.tier2]
     FeedProvider,
     LiveDataStreamAdapter,
     NoOpFeedProvider,

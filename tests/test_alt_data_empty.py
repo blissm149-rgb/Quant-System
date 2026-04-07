@@ -14,6 +14,8 @@ import pytest
 
 from quant_fund.alternative_data.news_sentiment.news_ingestion import NewsIngestion
 from quant_fund.alternative_data.news_sentiment.sentiment_feature_generation import (
+
+pytestmark = [pytest.mark.tier2]
     SentimentFeatureGeneration,
 )
 from quant_fund.alternative_data.news_sentiment.sentiment_model import SentimentModel

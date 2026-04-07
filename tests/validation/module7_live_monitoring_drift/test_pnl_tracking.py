@@ -12,7 +12,7 @@ import pandas as pd
 from quant_fund.monitoring.pnl_dashboard import PnLDashboard
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 class TestPnLDashboardAccuracy:

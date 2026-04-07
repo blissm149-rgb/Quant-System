@@ -25,6 +25,8 @@ from quant_fund.alpha_discovery.ml_feature_selector import MLFeatureSelector
 from quant_fund.alpha_discovery.signal_ranking_engine import SignalRankingEngine
 from quant_fund.alpha_monitoring.alpha_performance_tracker import AlphaPerformanceTracker
 from quant_fund.alpha_monitoring.information_coefficient_monitor import (
+
+pytestmark = [pytest.mark.tier2]
     InformationCoefficientMonitor,
     AlertLevel,
 )

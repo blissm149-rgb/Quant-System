@@ -23,7 +23,7 @@ import pytest
 
 from tests.conftest import make_ohlcv, make_returns, STANDARD_TICKERS, STANDARD_SECTORS
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 # Root of production code
 QUANT_FUND_ROOT = Path(__file__).resolve().parents[3] / "quant_fund"

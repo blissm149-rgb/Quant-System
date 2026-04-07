@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = [pytest.mark.tier2]
+
 
 class TestTrainingPipeline:
     """Tests for the offline training pipeline."""

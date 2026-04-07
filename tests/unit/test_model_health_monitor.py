@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 
 from quant_fund.monitoring.model_health_monitor import (
+
+pytestmark = [pytest.mark.tier1]
     DegradationEvent,
     ModelHealthMonitor,
 )

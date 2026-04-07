@@ -14,7 +14,7 @@ from quant_fund.risk_engine.stress_test_engine import (
 )
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 def _make_portfolio():

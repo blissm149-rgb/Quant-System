@@ -23,7 +23,7 @@ from tests.conftest import make_ohlcv, STANDARD_TICKERS
 from tests.validation.shared.perturbation_engine import PerturbationEngine
 
 
-pytestmark = [pytest.mark.validation]
+pytestmark = [pytest.mark.validation, pytest.mark.tier4]
 
 
 def _aligned_data(ohlcv, as_of_idx=400, lookback=300):
